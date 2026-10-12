@@ -284,7 +284,7 @@ func _turn_hint(points: Array[Vector3]) -> String:
 		var first: Vector2 = _xz(points[i] - points[i - 1])
 		var second: Vector2 = _xz(points[i + 1] - points[i])
 		distance += first.length()
-		if first.length() < 0.2 or second.length() < 0.2:
+		if first.length() < 1.5 or second.length() < 1.5:
 			continue
 		var angle: float = first.angle_to(second)
 		if absf(angle) >= 0.6:

@@ -19,7 +19,7 @@ M opens the large map and closes it. The existing map input action is reused. WA
 
 The old map drew four generic streets per axis while the physical city has three. World now records actual road, pavement, park-path and building footprints as those objects are created. Both maps draw those footprints, an orientation triangle, pickup/delivery marker colours, and the same remaining polyline with direction arrows. Full map uses a square world projection and a scrolling overlay at small window sizes.
 
-Walking/bicycle prefer paths and pavement; scooters/cars use the road network. The final off-road approach for motor vehicles is displayed as a gold dashed walking segment. Order status remains confirmed by the existing Solo/Host logic before the goal changes. No navigation RPC, reward request, movement authority or save schema has been introduced.
+Walking/bicycle prefer paths and pavement; scooters/cars use the road network. The final off-road approach for motor vehicles is displayed as a gold dashed walking segment. Order status remains confirmed by the existing Solo/Host logic before the goal changes. No navigation RPC, reward request, movement authority or save schema has been introduced. Existing coordinate RPCs now use ordered reliable delivery on channel 0: a two-process regression exposed stale Host positions with unreliable ordered packets, which prevented confirmed pickup. The existing sender, session, finite-coordinate, speed, collision and order-owner checks remain unchanged.
 
 The bounded AStar grid validates cell centres and every edge against expanded obstacles instead of requiring an entire three-metre cell to fit in a narrow passage. Successful paths are checked again before use. Simplification removes only safe collinear points; unavailable paths show a message and marker without a straight-line substitute. Guidance caches paths, updates remaining route length as the player progresses, and rebuilds after deviation or goal/vehicle changes. Footprints are static; dynamic player vehicles are not GPS obstacles.
 
@@ -28,7 +28,7 @@ The bounded AStar grid validates cell centres and every edge against expanded ob
 Run: godot --headless --path GodotDemo --script tests/navigation_routes.gd -- --test-mode.
 The guard prevents using a real profile. Tests cover building detours, exact goals, a pedestrian shortcut versus a U-shaped motor road, disconnected roads, blocked addresses, a shifted two-metre passage, query caching, deviations, objective switching, the real city, both HUD maps, actual pickup/delivery and Money/XP.
 
-The CI imports scripts before testing, exports Windows x86_64 and macOS Universal, then runs the same meaningful checks against the exact target PCKs through the Linux editor. This does not replace native OS launch, physical mixed-platform LAN or FPS measurements.
+The CI imports scripts before testing, runs a two-process ENet loopback test of personal routes, confirmed pickup and disconnect handling, and renders the full map at 1280x720 and 960x540 using software OpenGL. It exports Windows x86_64 and macOS Universal, verifies both CPU architectures in the macOS binary, and runs the same navigation/Solo checks against the exact target PCKs through the Linux editor. This does not replace native OS launch, physical mixed-platform LAN or FPS measurements.
 
 ## Potential errors and limitations
 

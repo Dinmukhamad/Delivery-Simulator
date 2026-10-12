@@ -20,6 +20,7 @@ func flag(name: String, value: String = "ok") -> void:
 	var file: FileAccess = FileAccess.open(coord.path_join(name), FileAccess.WRITE)
 	if file != null:
 		file.store_string(value)
+		file.close()
 
 func wait_for(condition: Callable, seconds: float = 12.0) -> bool:
 	var deadline: int = Time.get_ticks_msec() + int(seconds * 1000)
@@ -46,11 +47,6 @@ func _run() -> void:
 	root.add_child(app)
 	await process_frame
 	await physics_frame
-	app.lan_session.event_received.connect(func(event: Dictionary) -> void: print("LAN_EVENT: ", role, " ", event))
-	app.lan_session.request_received.connect(func(peer: int, action: String, _payload: Dictionary) -> void:
-		if peer != 1 and app.lan_authority.records.has(peer):
-			print("HOST_PEER_ACTION: ", action, " payload=", _payload.get("position"), " position=", app.lan_authority.records[peer].get("position"), " credit=", app.lan_authority.records[peer].get("move_credit"))
-	)
 	if role == "host":
 		await run_host()
 	else:
@@ -113,8 +109,6 @@ func run_client() -> void:
 	check(not app.hud._mini_map.route_points.is_empty(), "Confirmed client order has a route")
 	check(app.hud._mini_map.route_points == app.hud._full_map.route_points, "Client maps have identical paths")
 	var pickup: Vector3 = app._target_position()
-	var movement_started: int = Time.get_ticks_msec()
-	var movement_frames: int = 0
 	Engine.max_fps = 60
 	var deadline: int = Time.get_ticks_msec() + 12_000
 	while Time.get_ticks_msec() < deadline:
@@ -126,14 +120,8 @@ func run_client() -> void:
 		Input.action_press("move_forward")
 		await process_frame
 		OS.delay_msec(17)
-		movement_frames += 1
-		if movement_frames % 10 == 0:
-			print("CLIENT_MOVEMENT_SAMPLE: time=", Time.get_ticks_msec(), " position=", app.player.global_position, " pose=", app._network_pose().get("position"), " last_pose=", app._last_pose_msec)
 	Input.action_release("move_forward")
 	await physics_frame
-	print("CLIENT_MOVEMENT_TIMING: elapsed=", Time.get_ticks_msec() - movement_started, " frames=", movement_frames, " max_fps=", Engine.max_fps)
-	print("CLIENT_TIMING: now=", Time.get_ticks_msec(), " last_pose=", app._last_pose_msec, " processing=", app.is_processing(), " state=", app.state, " phase=", app.lan_session.phase)
-	print("LAN_INTERACT_DIAGNOSTIC: position=", app.player.global_position, " target=", pickup, " distance=", app.player.global_position.distance_to(pickup), " can=", app._can_interact(), " modal=", app.modal, " controls=", app.player.controls_enabled)
 	app._interact()
 	var picked: bool = await wait_for(func() -> bool: return app.active_order.get("state", "") == "PickedUp")
 	check(picked, "Real movement and E interaction obtain Host-confirmed pickup")
