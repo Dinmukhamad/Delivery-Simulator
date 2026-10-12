@@ -66,6 +66,18 @@ jobs:
           if result.returncode or "SCRIPT ERROR:" in output or "NAVIGATION_TESTS:" not in output:
               raise SystemExit("Navigation checks failed")
           PY
+      - name: Verify Team Shift server rules
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/team_shift.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+          output = result.stdout + result.stderr
+          pathlib.Path("build-reports/team-tests.log").write_text(output)
+          print(output)
+          if result.returncode or "SCRIPT ERROR:" in output or "TEAM_SHIFT_TESTS:" not in output:
+              raise SystemExit("Team Shift checks failed")
+          PY
       - name: Verify two-process LAN navigation
         shell: bash
         run: |
@@ -104,6 +116,46 @@ jobs:
                   for role in handles:
                       print("PEER_LOG " + role + "\\n" + (reports / ("lan-" + role + ".log")).read_text())
           PY
+      - name: Verify cooperative LAN and isolated profile saves
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tempfile, time
+          reports = pathlib.Path("build-reports")
+          with tempfile.TemporaryDirectory() as coord:
+              handles, processes = {}, {}
+              try:
+                  for role in ["host", "client"]:
+                      if role == "client":
+                          deadline = time.monotonic() + 20
+                          while not pathlib.Path(coord, "host-ready").exists():
+                              if time.monotonic() > deadline or processes["host"].poll() is not None:
+                                  raise RuntimeError("Team Host did not open lobby")
+                              time.sleep(0.05)
+                      handles[role] = open(reports / ("team-lan-" + role + ".log"), "w")
+                      env = os.environ.copy()
+                      env["XDG_DATA_HOME"] = str(pathlib.Path(coord, role, "data"))
+                      env["XDG_CONFIG_HOME"] = str(pathlib.Path(coord, role, "config"))
+                      env["DELIVERY_TEAM_TEST_SAVE"] = "1"
+                      cmd = [os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/lan_team_peer.gd", "--", "--test-mode", "--isolated-save", "--role=" + role, "--coord=" + coord]
+                      processes[role] = subprocess.Popen(cmd, stdout=handles[role], stderr=subprocess.STDOUT, env=env)
+                  for role in ["client", "host"]:
+                      code = processes[role].wait(timeout=75)
+                      handles[role].flush()
+                      log = (reports / ("team-lan-" + role + ".log")).read_text()
+                      print(log)
+                      if code or "SCRIPT ERROR:" in log or "LAN_TEAM_" not in log:
+                          raise RuntimeError("Cooperative LAN checks failed: " + role)
+              finally:
+                  for process in processes.values():
+                      if process.poll() is None:
+                          process.kill()
+                          process.wait()
+                  for handle in handles.values():
+                      handle.close()
+                  for role in handles:
+                      print("TEAM_PEER_LOG " + role + "\\n" + (reports / ("team-lan-" + role + ".log")).read_text())
+          PY
       - name: Install software rendering support
         shell: bash
         run: |
@@ -127,6 +179,30 @@ jobs:
               print(log)
               if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_VISUAL:" not in log:
                   raise SystemExit("Map render check failed")
+          PY
+      - name: Capture actual Team Shift screens
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, os, pathlib, subprocess
+          reports = pathlib.Path("build-reports")
+          for page, width in [("game", 1280), ("orders", 1280), ("orders", 960), ("results", 1280)]:
+              name = "team-" + page + "-" + str(width) + ".png"
+              capture = str((reports / name).resolve())
+              cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", os.environ["GODOT_BINARY"], "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/team_visual.gd", "--", "--test-mode", "--width=" + str(width), "--screen=" + page, "--capture=" + capture]
+              env = os.environ.copy()
+              env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              log = result.stdout + result.stderr
+              (reports / ("team-visual-" + page + "-" + str(width) + ".log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "TEAM_VISUAL:" not in log:
+                  raise SystemExit("Team render check failed")
+              encoded = base64.b64encode(pathlib.Path(capture).read_bytes()).decode("ascii")
+              print("SCREENSHOT_BEGIN " + name)
+              for offset in range(0, len(encoded), 4000):
+                  print("SCREENSHOT_DATA " + encoded[offset:offset + 4000])
+              print("SCREENSHOT_END " + name)
           PY
       - name: Install only required Windows and macOS templates
         shell: bash
@@ -190,6 +266,7 @@ jobs:
               if not {0x01000007, 0x0100000c}.issubset(cpus):
                   raise SystemExit("macOS Universal lacks Intel or Apple Silicon")
           script = str(pathlib.Path("GodotDemo/tests/navigation_routes.gd").resolve())
+          team_script = str(pathlib.Path("GodotDemo/tests/team_shift.gd").resolve())
           for tag, pack in [("windows", exe), ("macos", pck)]:
               result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
               log = result.stdout + result.stderr
@@ -197,6 +274,12 @@ jobs:
               print(log)
               if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_TESTS:" not in log:
                   raise SystemExit("Packed checks failed: " + tag)
+              team_result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", team_script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+              team_log = team_result.stdout + team_result.stderr
+              (reports / (tag + "-packed-team-tests.log")).write_text(team_log)
+              print(team_log)
+              if team_result.returncode or "SCRIPT ERROR:" in team_log or "TEAM_SHIFT_TESTS:" not in team_log:
+                  raise SystemExit("Packed Team Shift checks failed: " + tag)
           PY
       - name: Package downloadable game and source archives
         shell: bash
@@ -205,32 +288,33 @@ jobs:
           import hashlib, json, os, pathlib, shutil, zipfile
           dest = pathlib.Path("downloads")
           dest.mkdir(exist_ok=True)
-          guide = """Delivery Simulator Demo 0.9.0
+          guide = """Delivery Simulator Demo 0.10.0
           Windows: unpack the archive and start DeliverySimulatorDemo.exe.
           macOS: unpack the archive and open Delivery Simulator.app.
           Controls: WASD, Mouse, Shift, Space, E, F, M (map), Tab, Esc.
           LAN: Host Game on one computer; Join Game with the Host IPv4 address on the other. UDP port 7777, matching game versions, same local network.
           Map: streets and buildings match the actual city; teal route, gold pickup, teal delivery, gold dashed final walking access.
+          Team Shift: select Team mode when hosting. Complete 4 deliveries per starting player; each connected courier with a completed personal delivery receives 500 Money and 100 XP once. Tab offers/accepts parcel handoffs near a free teammate on foot.
           Native OS launch, physical Windows/macOS LAN and FPS require acceptance testing.
           Godot 4.6.3: MIT license, https://godotengine.org/license/
           Original generated audio: CC0 1.0, https://creativecommons.org/publicdomain/zero/1.0/
           """
           (pathlib.Path("builds/Windows") / "README.txt").write_text(guide)
-          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.9.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.10.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for p in pathlib.Path("builds/Windows").rglob("*"):
                   if p.is_file():
-                      z.write(p, "DeliverySimulatorDemo_Windows_v0.9.0/" + str(p.relative_to("builds/Windows")))
-          maczip = dest / "DeliverySimulatorDemo_macOS_v0.9.0.zip"
+                      z.write(p, "DeliverySimulatorDemo_Windows_v0.10.0/" + str(p.relative_to("builds/Windows")))
+          maczip = dest / "DeliverySimulatorDemo_macOS_v0.10.0.zip"
           shutil.copy2("builds/macOS/Delivery Simulator.zip", maczip)
           with zipfile.ZipFile(maczip, "a", zipfile.ZIP_DEFLATED) as z:
               z.writestr("README.txt", guide)
-          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Source_v0.9.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Source_v0.10.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for p in pathlib.Path("GodotDemo").rglob("*"):
                   if p.is_file() and not any(part in [".godot", ".git", ".autoconverted", ".gdre"] for part in p.parts):
-                      z.write(p, "DeliverySimulatorDemo_Source_v0.9.0/" + str(p.relative_to("GodotDemo")))
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.10.0/" + str(p.relative_to("GodotDemo")))
               for p in pathlib.Path("docs").rglob("*"):
                   if p.is_file():
-                      z.write(p, "DeliverySimulatorDemo_Source_v0.9.0/docs/" + str(p.relative_to("docs")))
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.10.0/docs/" + str(p.relative_to("docs")))
           hashes = []
           for p in sorted(dest.glob("*.zip")):
               with zipfile.ZipFile(p) as z:
@@ -239,7 +323,7 @@ jobs:
               digest = hashlib.sha256(p.read_bytes()).hexdigest()
               hashes.append(digest + "  " + p.name)
           (dest / "SHA256SUMS.txt").write_text("\n".join(hashes) + "\n")
-          report = {"version": "0.9.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
+          report = {"version": "0.10.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "team_rules_and_packs": "passed", "team_lan_and_isolated_saves": "passed", "team_visual": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
           pathlib.Path("build-reports/build.json").write_text(json.dumps(report, indent=2) + "\n")
           print(json.dumps(report))
           PY
@@ -251,16 +335,16 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-Windows-v0.9.0
-          path: downloads/DeliverySimulatorDemo_Windows_v0.9.0.zip
+          name: DeliverySimulatorDemo-Windows-v0.10.0
+          path: downloads/DeliverySimulatorDemo_Windows_v0.10.0.zip
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-macOS-v0.9.0
-          path: downloads/DeliverySimulatorDemo_macOS_v0.9.0.zip
+          name: DeliverySimulatorDemo-macOS-v0.10.0
+          path: downloads/DeliverySimulatorDemo_macOS_v0.10.0.zip
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-Source-v0.9.0
-          path: downloads/DeliverySimulatorDemo_Source_v0.9.0.zip
+          name: DeliverySimulatorDemo-Source-v0.10.0
+          path: downloads/DeliverySimulatorDemo_Source_v0.10.0.zip
           retention-days: 30

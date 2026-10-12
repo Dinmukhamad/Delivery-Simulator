@@ -13,7 +13,7 @@ const SettingsService = preload("res://scripts/settings_service.gd")
 const AudioManagerScript = preload("res://scripts/audio_manager.gd")
 const NavigationService = preload("res://scripts/navigation_service.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.9.0"
+const DEMO_VERSION: = "0.10.0"
 
 var city
 var player
@@ -36,6 +36,8 @@ var vehicle_defs: Dictionary = {}
 var vehicles: Dictionary = {}
 var _network_players: Array = []
 var _network_leaderboard: Array = []
+var _network_team: Dictionary = {}
+var _network_handoffs: Dictionary = {}
 var _last_network_revision: int = -1
 var _snapshot_time_msec: int = 0
 var _snapshot_remaining: float = 0.0
@@ -74,6 +76,10 @@ func _ready() -> void :
 	hud.modal_closed.connect(_close_modal)
 	hud.multiplayer_requested.connect(_open_lan_menu)
 	hud.host_requested.connect(_host_lan)
+	hud.handoff_offer_requested.connect(_offer_handoff)
+	hud.handoff_accept_requested.connect(_accept_handoff)
+	hud.handoff_decline_requested.connect(_decline_handoff)
+	hud.handoff_cancel_requested.connect(_cancel_handoff)
 	hud.join_requested.connect(_join_lan)
 	hud.ready_requested.connect(_set_lan_ready)
 	hud.start_requested.connect(_start_lan_shift)
@@ -225,6 +231,8 @@ func _begin_shift() -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
 	player.set_carrying(false)
 	player.reset_at(city.spawn_position)
 	_spawn_owned_vehicle_at_start()
@@ -435,8 +443,15 @@ func _update_hud() -> void :
 	var route_data: Dictionary = navigation.guidance(player.global_position, _target_position(), route_key, _active_vehicle_name())
 	if not active_order.is_empty():
 		distance = float(route_data.get("distance", 0.0))
+	var handoffs: Dictionary = _handoff_view()
+	if not handoffs.get("incoming", []).is_empty() and not player.is_riding():
+		interaction = "Tab — друг предлагает посылку · подтвердите передачу"
+	elif not _handoff_candidates().is_empty():
+		interaction += " · Tab — передать другу"
 	var pose: Dictionary = player.get_network_pose()
 	hud.update_hud({
+		"team": _network_team, "handoffs": handoffs,
+		"handoff_candidates": _handoff_candidates(),
 		"navigation": route_data, "player_yaw": float(pose.get("yaw", 0.0)),
 		"money": int(profile["money"]), "xp": int(profile["xp"]), "level": int(profile["level"]), 
 		"rank": str(profile["rank"]), "shift_remaining": shift_remaining, 
@@ -1008,14 +1023,14 @@ func _open_lan_menu() -> void :
 	hud.show_lan_menu(profile)
 
 
-func _host_lan(player_name: String, room_name: String, max_players: int, shift_seconds: int) -> void :
+func _host_lan(player_name: String, room_name: String, max_players: int, shift_seconds: int, shift_mode: String = "competitive") -> void :
 	if _lan_active():
 		return
 	profile["player_name"] = _clean_player_name(player_name)
 	_save_profile()
 	state = "connecting"
 	hud.set_connecting("Создание LAN-комнаты…")
-	var error: int = lan_session.host_game(profile, room_name, max_players, shift_seconds)
+	var error: int = lan_session.host_game(profile, room_name, max_players, shift_seconds, shift_mode)
 	if error != OK:
 		state = "network_menu"
 		hud.show_lan_menu(profile, "Не удалось создать комнату. Возможно, порт 7777 уже занят.")
@@ -1056,6 +1071,8 @@ func _on_lan_lobby(data: Dictionary) -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
 	_clear_vehicles()
 	city.clear_objective()
 	player.set_carrying(false)
@@ -1079,6 +1096,8 @@ func _on_lan_started(data: Dictionary) -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
 	_network_leaderboard.clear()
 	_reset_shift_stats()
 	_clear_vehicles()
@@ -1106,7 +1125,7 @@ func _on_lan_started(data: Dictionary) -> void :
 		lan_authority.start_session(data, roster, city, balance, str(data.get("session_id", "")))
 	_update_hud()
 	_open_orders()
-	hud.notify("Общие заказы: кто первым принял, тот и выполняет доставку.")
+	hud.notify("Командная смена: выполняйте общий план. Tab — передать посылку другу рядом." if str(data.get("shift_mode", "competitive")) == "team" else "Общие заказы: кто первым принял, тот и выполняет доставку.")
 
 
 func _on_lan_request(peer_id: int, action: String, payload: Dictionary) -> void :
@@ -1154,6 +1173,8 @@ func _on_lan_state(data: Dictionary) -> void :
 		if not _save_profile():
 			hud.notify("Награда подтверждена, но файл профиля не удалось записать.")
 	shift_stats = data.get("shift_stats", {}).duplicate(true)
+	_network_team = data.get("team", {}).duplicate(true)
+	_network_handoffs = data.get("handoffs", {}).duplicate(true)
 	var received_orders: Array = data.get("orders", [])
 	var orders_changed: bool = orders != received_orders
 	orders.assign(received_orders)
@@ -1193,6 +1214,7 @@ func _on_lan_state(data: Dictionary) -> void :
 		player.set_mouse_captured(false)
 		var results: Dictionary = shift_stats.duplicate(true)
 		results["leaderboard"] = _network_leaderboard
+		results["team"] = _network_team.duplicate(true)
 		hud.show_results(results)
 
 
@@ -1206,12 +1228,12 @@ func _play_confirmed_lan_audio(prior_order: Dictionary, previous_deliveries: int
 	var same_order: bool = not active_order.is_empty() and int(prior_order.get("id", -1)) == int(active_order.get("id", -2))
 	if active_order.get("state", "") == "Accepted" and not same_order:
 		_play_sound("order_accept")
-	elif same_order and prior_order.get("state", "") != "PickedUp" and active_order.get("state", "") == "PickedUp":
+	elif active_order.get("state", "") == "PickedUp" and (not same_order or prior_order.get("state", "") != "PickedUp"):
 		_play_sound("pickup")
 	if int(shift_stats.get("deliveries", 0)) > previous_deliveries:
 		_play_sound("delivery")
-		if int(profile.get("level", 1)) > previous_level:
-			_play_sound("level_up")
+	if int(profile.get("level", 1)) > previous_level:
+		_play_sound("level_up")
 	for owned: Variant in profile.get("owned_vehicles", []):
 		if not previous_owned.has(owned):
 			_play_sound("purchase")
@@ -1220,6 +1242,8 @@ func _play_confirmed_lan_audio(prior_order: Dictionary, previous_deliveries: int
 
 func _on_lan_event(event: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
+		return
+	if event.has("session_id") and str(event["session_id"]) != lan_session.session_id:
 		return
 	if str(event.get("type", "notice")) == "vehicle_state":
 		var vehicle_data: Variant = event.get("vehicle", {})
@@ -1365,6 +1389,8 @@ func _return_to_main_menu() -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
 	_network_leaderboard.clear()
 	_clear_vehicles()
 	_clear_remote_players()
@@ -1377,3 +1403,61 @@ func _return_to_main_menu() -> void :
 	player.set_mouse_captured(false)
 	hud.set_network_mode(false, false)
 	hud.show_menu(profile)
+
+func _handoff_view() -> Dictionary:
+	if not _lan_active() or not bool(_network_team.get("enabled", false)):
+		return {"incoming": [], "outgoing": {}}
+	var view: Dictionary = _network_handoffs.duplicate(true)
+	var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+	var incoming: Array = []
+	for offer: Dictionary in view.get("incoming", []):
+		offer["remaining"] = maxf(0.0, float(offer.get("remaining", 0.0)) - elapsed)
+		if float(offer["remaining"]) > 0.0:
+			incoming.append(offer)
+	view["incoming"] = incoming
+	var outgoing: Dictionary = view.get("outgoing", {})
+	if not outgoing.is_empty():
+		outgoing["remaining"] = maxf(0.0, float(outgoing.get("remaining", 0.0)) - elapsed)
+		if float(outgoing["remaining"]) <= 0.0:
+			outgoing = {}
+	view["outgoing"] = outgoing
+	return view
+
+
+func _handoff_candidates() -> Array:
+	var candidates: Array = []
+	if not _lan_active() or not bool(_network_team.get("enabled", false)) or player.is_riding() or active_order.get("state", "") != "PickedUp":
+		return candidates
+	for member: Dictionary in _network_players:
+		var peer_id: int = int(member.get("id", 0))
+		if peer_id == lan_session.local_id or not bool(member.get("connected", false)) or bool(member.get("has_order", true)):
+			continue
+		if str(member.get("active_vehicle", "walking")) != "walking":
+			continue
+		var position: Vector3 = member.get("position", Vector3.INF)
+		if player.global_position.distance_to(position) <= 3.2:
+			candidates.append({"id": peer_id, "name": str(member.get("name", "Курьер"))})
+	return candidates
+
+
+func _request_handoff(action: String, payload: Dictionary = {}) -> void:
+	if state != "playing" or not _lan_active() or not bool(_network_team.get("enabled", false)):
+		return
+	lan_session.send_pose(_network_pose())
+	lan_session.request_action(action, payload)
+
+
+func _offer_handoff(target_id: int) -> void:
+	_request_handoff("offer_handoff", {"target_id": target_id})
+
+
+func _accept_handoff(sender_id: int, offer_id: int) -> void:
+	_request_handoff("accept_handoff", {"sender_id": sender_id, "offer_id": offer_id})
+
+
+func _decline_handoff(sender_id: int, offer_id: int) -> void:
+	_request_handoff("decline_handoff", {"sender_id": sender_id, "offer_id": offer_id})
+
+
+func _cancel_handoff() -> void:
+	_request_handoff("cancel_handoff")

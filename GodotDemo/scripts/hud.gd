@@ -9,7 +9,7 @@ signal order_requested(order_id: int)
 signal abandon_requested
 signal modal_closed
 signal multiplayer_requested
-signal host_requested(player_name: String, room_name: String, max_players: int, shift_seconds: int)
+signal host_requested(player_name: String, room_name: String, max_players: int, shift_seconds: int, shift_mode: String)
 signal join_requested(player_name: String, address: String)
 signal ready_requested(ready: bool)
 signal start_requested
@@ -23,6 +23,10 @@ signal settings_closed
 signal settings_confirm_requested
 signal settings_revert_requested
 signal ui_click_requested
+signal handoff_offer_requested(target_id: int)
+signal handoff_accept_requested(sender_id: int, offer_id: int)
+signal handoff_decline_requested(sender_id: int, offer_id: int)
+signal handoff_cancel_requested
 
 const INK: Color = Color("243b3a")
 const MUTED: Color = Color("73817c")
@@ -91,6 +95,7 @@ var _lan_room: LineEdit
 var _lan_address: LineEdit
 var _lan_max_players: OptionButton
 var _lan_shift: OptionButton
+var _lan_mode: OptionButton
 var _lan_status: Label
 var _lan_host_button: Button
 var _lan_join_button: Button
@@ -144,6 +149,18 @@ var _settings_defaults: Dictionary = {}
 var _settings_resolution_values: Array[Vector2i] = []
 var _menu_settings: Button
 var _pause_settings: Button
+var _team_panel: PanelContainer
+var _team_progress: Label
+var _team_status: Label
+var _team_message: Label
+var _handoff_panel: PanelContainer
+var _handoff_rows: VBoxContainer
+var _handoff_progress: Label
+var _handoff_personal: Label
+var _handoff_signature: String = ""
+var _handoff_timers: Array[Dictionary] = []
+var _results_team: PanelContainer
+var _results_team_text: Label
 
 
 class VehicleIllustration extends Control:
@@ -684,6 +701,18 @@ func _build_lan_menu() -> void :
 	_lan_shift.add_item("Без ограничения", 0)
 	_lan_shift.select(1)
 	duration.add_child(_lan_shift)
+	host.add_child(_label("Режим смены", 13, MUTED))
+	_lan_mode = OptionButton.new()
+	_lan_mode.custom_minimum_size.y = 40.0
+	_lan_mode.add_item("Соревнование", 0)
+	_lan_mode.add_item("Командная смена", 1)
+	_lan_mode.select(0)
+	_lan_mode.item_selected.connect(func(_index: int) -> void: ui_click_requested.emit())
+	host.add_child(_lan_mode)
+	var mode_note: Label = _label("Командная смена: общий план и личный бонус за вклад. Можно передать посылку другу с его согласия.", 12, MUTED)
+	mode_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mode_note.custom_minimum_size.x = 280.0
+	host.add_child(mode_note)
 	host.add_child(_label("Host запускает смену, когда все готовы.", 12, MUTED))
 	_lan_host_button = _compact_button("Создать · Host", _request_host)
 	host.add_child(_lan_host_button)
@@ -710,7 +739,8 @@ func _request_host() -> void :
 	var player_name: String = _lan_name.text.strip_edges()
 	var room_name: String = _lan_room.text.strip_edges()
 	var shift_seconds: int = _lan_shift.get_selected_id()
-	host_requested.emit(player_name if not player_name.is_empty() else "Курьер", room_name if not room_name.is_empty() else "Курьерская смена", _lan_max_players.get_selected_id(), -1 if shift_seconds == 0 else shift_seconds)
+	var shift_mode: String = "team" if _lan_mode.get_selected_id() == 1 else "competitive"
+	host_requested.emit(player_name if not player_name.is_empty() else "Курьер", room_name if not room_name.is_empty() else "Курьерская смена", _lan_max_players.get_selected_id(), -1 if shift_seconds == 0 else shift_seconds, shift_mode)
 
 
 func _request_join() -> void :
@@ -729,6 +759,7 @@ func _build_lobby() -> void :
 	_lobby_address = _label("Host IP · UDP 7777", 15, TEAL)
 	content.add_child(_lobby_address)
 	_lobby_details = _label("", 14, MUTED)
+	_lobby_details.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_lobby_details)
 	var roster: PanelContainer = _card(content, PAPER)
 	var roster_content: VBoxContainer = _vbox(roster, 8)
@@ -849,6 +880,7 @@ func _build_game() -> void :
 	_timer = _label("10:00", 22)
 	_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	clock.add_child(_timer)
+	_build_team_progress()
 	_deliveries = _label("Доставлено: 0", 13, CREAM)
 	_deliveries.add_theme_color_override("font_outline_color", INK)
 	_deliveries.add_theme_constant_override("outline_size", 3)
@@ -882,6 +914,187 @@ func _build_game() -> void :
 	_interaction_panel.hide()
 	_ignore_mouse(_game)
 	_position_order_summary()
+
+
+
+func _build_team_progress() -> void:
+	_team_panel = _card(_game)
+	_team_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_team_panel.offset_left = -130.0
+	_team_panel.offset_right = 130.0
+	_team_panel.offset_top = 92.0
+	_team_panel.offset_bottom = 180.0
+	var box: StyleBoxFlat = _style(CREAM, 14)
+	box.content_margin_left = 12.0
+	box.content_margin_right = 12.0
+	box.content_margin_top = 10.0
+	box.content_margin_bottom = 10.0
+	_team_panel.add_theme_stylebox_override("panel", box)
+	var content: VBoxContainer = _vbox(_team_panel, 4)
+	_team_progress = _label("", 14, TEAL)
+	content.add_child(_team_progress)
+	_team_status = _label("", 12, MUTED)
+	_team_status.custom_minimum_size.x = 220.0
+	_team_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_team_status)
+	_team_message = _label("", 12, TEAL)
+	_team_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_team_message)
+	_team_panel.hide()
+	_ignore_mouse(_team_panel)
+
+
+func _team_goal_text(team: Dictionary) -> String:
+	return "Общий план: %d / %d доставок%s" % [int(team.get("delivered", 0)), int(team.get("target", 0)), " — выполнен!" if bool(team.get("completed", false)) else ""]
+
+
+func _team_personal_text(team: Dictionary) -> String:
+	var contribution: int = int(team.get("contributions", 0))
+	var reward: String = "+%s ₽ · +%d XP" % [_amount(int(team.get("bonus_money", 0))), int(team.get("bonus_xp", 0))]
+	if bool(team.get("bonus_awarded", false)):
+		return "Ваш вклад: %d доставок. Командный бонус получен: %s." % [contribution, reward]
+	if contribution < 1:
+		return "Для личного бонуса %s завершите хотя бы одну доставку. Получение и передача посылки не считаются доставкой." % reward
+	return "Ваш вклад: %d доставок. Бонус %s начисляется один раз после общего плана, пока вы в сессии." % [contribution, reward]
+
+
+func _update_team_hud(data: Dictionary) -> void:
+	var team: Dictionary = data.get("team", {})
+	var enabled: bool = _network_enabled and bool(team.get("enabled", false))
+	_team_panel.visible = enabled
+	_handoff_panel.visible = enabled
+	if not enabled:
+		_handoff_signature = ""
+		return
+	_team_progress.text = "КОМАНДА · %d / %d" % [int(team.get("delivered", 0)), int(team.get("target", 0))]
+	_team_status.text = "План выполнен · бонус получен" if bool(team.get("bonus_awarded", false)) else ("Ваш вклад: %d · ждём общий план" % int(team.get("contributions", 0)) if bool(team.get("eligible", false)) else "Доставьте 1 заказ для личного бонуса")
+	var handoffs: Dictionary = data.get("handoffs", {})
+	var incoming: Array = handoffs.get("incoming", [])
+	var outgoing: Dictionary = handoffs.get("outgoing", {})
+	_team_message.text = "Вам предлагают посылку · Tab" if not incoming.is_empty() else ("Передача ожидает друга · Tab" if not outgoing.is_empty() else "")
+	_team_message.visible = not _team_message.text.is_empty()
+	_update_handoffs(data)
+	if is_instance_valid(_handoff_progress):
+		_handoff_progress.text = _team_goal_text(team)
+		_handoff_personal.text = _team_personal_text(team)
+
+
+func _handoff_key(entry: Dictionary, incoming: bool) -> Dictionary:
+	return {
+		"offer_id": int(entry.get("offer_id", 0)),
+		"peer_id": int(entry.get("sender_id" if incoming else "target_id", 0)),
+		"order_id": int(entry.get("order_id", 0)),
+		"name": String(entry.get("name", "Курьер")),
+		"title": String(entry.get("title", "Посылка")),
+	}
+
+
+func _update_handoffs(data: Dictionary) -> void:
+	var handoffs: Dictionary = data.get("handoffs", {})
+	var incoming: Array = handoffs.get("incoming", [])
+	var outgoing: Dictionary = handoffs.get("outgoing", {})
+	var candidates: Array = data.get("handoff_candidates", [])
+	var incoming_keys: Array = []
+	var candidate_keys: Array = []
+	for value: Variant in incoming:
+		if value is Dictionary:
+			incoming_keys.append(_handoff_key(value, true))
+	for value: Variant in candidates:
+		if value is Dictionary:
+			candidate_keys.append({"id": int(value.get("id", 0)), "name": String(value.get("name", "Курьер"))})
+	var signature: String = JSON.stringify({"incoming": incoming_keys, "outgoing": _handoff_key(outgoing, false) if not outgoing.is_empty() else {}, "candidates": candidate_keys, "picked": String(data.get("order_state", "")) == "PickedUp"})
+	if signature != _handoff_signature:
+		_handoff_signature = signature
+		_rebuild_handoffs(incoming, outgoing, candidates, String(data.get("order_state", "")) == "PickedUp")
+	# Remaining time changes every snapshot; keep controls and keyboard focus intact.
+	for timer: Dictionary in _handoff_timers:
+		var entry: Dictionary = {}
+		if bool(timer.get("incoming", false)):
+			for value: Variant in incoming:
+				if value is Dictionary and int(value.get("sender_id", 0)) == int(timer["sender_id"]) and int(value.get("offer_id", 0)) == int(timer["offer_id"]):
+					entry = value
+					break
+		else:
+			entry = outgoing
+		var remaining: float = maxf(0.0, float(entry.get("remaining", 0.0)))
+		var label: Label = timer["label"]
+		label.text = "Ответьте за %d с" % ceili(remaining) if bool(timer.get("incoming", false)) else "Ожидаем согласия · %d с" % ceili(remaining)
+		for button: Button in timer["buttons"]:
+			button.disabled = remaining <= 0.0
+
+
+func _rebuild_handoffs(incoming: Array, outgoing: Dictionary, candidates: Array, picked_up: bool) -> void:
+	_handoff_timers.clear()
+	for child: Node in _handoff_rows.get_children():
+		_handoff_rows.remove_child(child)
+		child.queue_free()
+	_handoff_rows.add_child(_label("КОМАНДНАЯ СМЕНА", 12, TEAL))
+	_handoff_progress = _label("", 16)
+	_handoff_progress.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_handoff_rows.add_child(_handoff_progress)
+	_handoff_personal = _label("", 12, MUTED)
+	_handoff_personal.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_handoff_rows.add_child(_handoff_personal)
+	var help: Label = _label("Передача: оба пешком и рядом, у получателя нет заказа. Друг должен согласиться. Деньги и XP за заказ получает тот, кто доставит посылку.", 12, MUTED)
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_handoff_rows.add_child(help)
+	for value: Variant in incoming:
+		if not value is Dictionary:
+			continue
+		var entry: Dictionary = value
+		var sender_id: int = int(entry.get("sender_id", 0))
+		var offer_id: int = int(entry.get("offer_id", 0))
+		var name: String = String(entry.get("name", "Курьер"))
+		var title: Label = _label("Посылка от %s: %s" % [name, String(entry.get("title", "Доставка"))], 15, TEAL)
+		title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_handoff_rows.add_child(title)
+		var countdown: Label = _label("", 12, MUTED)
+		_handoff_rows.add_child(countdown)
+		var actions: HBoxContainer = HBoxContainer.new()
+		actions.add_theme_constant_override("separation", 8)
+		_handoff_rows.add_child(actions)
+		var accept: Button = _compact_button("Принять посылку", func() -> void: handoff_accept_requested.emit(sender_id, offer_id))
+		accept.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		actions.add_child(accept)
+		var decline: Button = _compact_button("Отказаться", func() -> void: handoff_decline_requested.emit(sender_id, offer_id), true)
+		decline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		actions.add_child(decline)
+		_handoff_timers.append({"incoming": true, "sender_id": sender_id, "offer_id": offer_id, "label": countdown, "buttons": [accept, decline]})
+	if not outgoing.is_empty():
+		var title: Label = _label("Предложено %s: %s" % [String(outgoing.get("name", "Курьер")), String(outgoing.get("title", "Посылка"))], 15)
+		title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_handoff_rows.add_child(title)
+		var countdown: Label = _label("", 12, MUTED)
+		_handoff_rows.add_child(countdown)
+		var cancel: Button = _compact_button("Отменить предложение", func() -> void: handoff_cancel_requested.emit(), true)
+		_handoff_rows.add_child(cancel)
+		_handoff_timers.append({"incoming": false, "label": countdown, "buttons": [cancel]})
+	elif not candidates.is_empty():
+		_handoff_rows.add_child(_label("Передать вашу посылку:", 14))
+		for value: Variant in candidates:
+			if not value is Dictionary:
+				continue
+			var candidate: Dictionary = value
+			var target_id: int = int(candidate.get("id", 0))
+			var name: String = String(candidate.get("name", "Курьер"))
+			_handoff_rows.add_child(_compact_button("Предложить · " + name, func() -> void: handoff_offer_requested.emit(target_id), true))
+	else:
+		var reason: Label = _label("Подойдите пешком к свободному другу, чтобы предложить посылку." if picked_up else "Сначала заберите посылку. Затем её можно предложить свободному другу.", 12, MUTED)
+		reason.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_handoff_rows.add_child(reason)
+
+
+func _update_team_results(stats: Dictionary) -> void:
+	var team: Dictionary = stats.get("team", {})
+	_results_team.visible = bool(team.get("enabled", false))
+	if not _results_team.visible:
+		return
+	var money: int = int(stats.get("team_bonus_money", 0))
+	var xp: int = int(stats.get("team_bonus_xp", 0))
+	var outcome: String = "Ваш командный бонус: +%s ₽ · +%d XP (уже включён в итоги)." % [_amount(money), xp]
+	if money <= 0 and xp <= 0:
+		outcome = "Командный бонус не получен: вы не завершили личную доставку." if int(team.get("contributions", 0)) < 1 else "Командный бонус не получен: общий план не выполнен."
+	_results_team_text.text = "%s\nВаш вклад: %d доставок. %s" % [_team_goal_text(team), int(team.get("contributions", 0)), outcome]
 
 
 func _quality_bar_style(color: Color) -> StyleBoxFlat:
@@ -981,6 +1194,11 @@ func _build_results() -> void :
 	_leaderboard_rows = _vbox(board, 6)
 	_leaderboard_rows.custom_minimum_size.y = 116.0
 	_leaderboard_panel.hide()
+	_results_team = _card(content, PAPER)
+	_results_team_text = _label("", 14, TEAL)
+	_results_team_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_results_team.add_child(_results_team_text)
+	_results_team.hide()
 	content.add_child(_label("Награды добавлены в ваш профиль.", 14, TEAL))
 	_results_wait = _label("", 14, MUTED)
 	content.add_child(_results_wait)
@@ -1028,7 +1246,7 @@ func _request_next_shift() -> void :
 
 
 func _build_orders() -> void :
-	var items: Array[Control] = _overlay(Vector2(760, 480))
+	var items: Array[Control] = _scroll_overlay(Vector2(800, 660))
 	_orders = items[0]
 	var content: VBoxContainer = _vbox(items[1], 10)
 	var header: HBoxContainer = HBoxContainer.new()
@@ -1038,9 +1256,14 @@ func _build_orders() -> void :
 	header.add_child(title)
 	header.add_child(_button("Закрыть", _close_modal, true))
 	_orders_hint = _label("Выберите маршрут и отправляйтесь к точке получения.", 14, MUTED)
+	_orders_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_orders_hint)
+	_handoff_panel = _card(content, PAPER)
+	_handoff_rows = _vbox(_handoff_panel, 8)
+	_handoff_panel.hide()
 	var scroll: ScrollContainer = ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(710, 310)
+	scroll.custom_minimum_size = Vector2(0, 260)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	content.add_child(scroll)
@@ -1579,6 +1802,7 @@ func show_lan_menu(profile: Dictionary, notice: String = "") -> void :
 	_lan_address.editable = true
 	_lan_max_players.disabled = false
 	_lan_shift.disabled = false
+	_lan_mode.disabled = false
 	_lan_back_button.text = "Главное меню"
 	_lan_status.text = notice
 	_lan_status.visible = not notice.is_empty()
@@ -1595,6 +1819,7 @@ func set_connecting(message: String) -> void :
 	_lan_address.editable = false
 	_lan_max_players.disabled = true
 	_lan_shift.disabled = true
+	_lan_mode.disabled = true
 	_lan_status.text = message
 	_lan_status.show()
 	_lan_back_button.text = "Отменить подключение"
@@ -1610,7 +1835,10 @@ func show_lobby(data: Dictionary, is_host: bool) -> void :
 	var players: Array = data.get("players", [])
 	var shift_seconds: int = int(config.get("shift_seconds", data.get("shift_seconds", 900)))
 	var duration: String = "без ограничения" if shift_seconds < 0 else "%d мин" % (shift_seconds / 60)
-	_lobby_details.text = "%d / %d игроков · смена %s · транспорт из профиля" % [players.size(), int(config.get("max_players", data.get("max_players", 4))), duration]
+	var team_mode: bool = String(config.get("shift_mode", data.get("shift_mode", "competitive"))) == "team"
+	_lobby_details.text = "%d / %d игроков · смена %s · %s" % [players.size(), int(config.get("max_players", data.get("max_players", 4))), duration, "Командная смена" if team_mode else "Соревнование"]
+	if team_mode:
+		_lobby_details.text += "\nОбщий план — %d доставки на каждого участника старта. Личный бонус: завершите хотя бы одну доставку." % int(config.get("team_goal_per_player", 4))
 	for child: Node in _lobby_players.get_children():
 		_lobby_players.remove_child(child)
 		child.queue_free()
@@ -1656,6 +1884,10 @@ func set_network_mode(enabled: bool, is_host: bool) -> void :
 	_results_wait.text = "Host вернёт всех в лобби для следующей смены." if enabled and not is_host else ""
 	_results_wait.visible = enabled and not is_host
 	if not enabled:
+		_team_panel.hide()
+		_handoff_panel.hide()
+		_handoff_signature = ""
+		_handoff_timers.clear()
 		_mini_map.update_other_players([])
 		_full_map.update_other_players([])
 
@@ -1683,6 +1915,7 @@ func show_results(stats: Dictionary, leaderboard: Array = []) -> void :
 	_results_title.text = "Хорошая работа, курьер!" if deliveries > 0 else "Первый шаг сделан."
 	_results_summary.text = "Смена завершена · время %s" % _time(float(stats.get("time_used", 0.0)))
 	_results_numbers.text = "Доставки     %d\nЗаработано   %s ₽\nОпыт             +%d XP\nЛучшая доставка   %s ₽" % [deliveries, _amount(int(stats.get("money", 0))), int(stats.get("xp", 0)), _amount(int(stats.get("best_delivery", 0)))]
+	_update_team_results(stats)
 	var entries: Array = leaderboard if not leaderboard.is_empty() else stats.get("leaderboard", [])
 	for child: Node in _leaderboard_rows.get_children():
 		_leaderboard_rows.remove_child(child)
@@ -1798,6 +2031,7 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 	_map_route_label.text = "%s · %s" % [_target.text, _navigation_hint.text] if _has_active_order else "Tab — выберите заказ, чтобы увидеть маршрут"
 
 	_update_order_quality(data)
+	_update_team_hud(data)
 	_deliveries.text = "Доставлено: %d" % int(data.get("deliveries", 0))
 	var active_vehicle: String = String(data.get("active_vehicle", "walking"))
 	var riding: bool = active_vehicle in VEHICLE_TYPES

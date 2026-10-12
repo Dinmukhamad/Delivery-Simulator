@@ -8,6 +8,7 @@ signal pose_ready(peer_id: int, pose: Dictionary)
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const VehiclePlacement = preload("res://scripts/vehicle_placement.gd")
 const FragileRules = preload("res://scripts/fragile_rules.gd")
+const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
 const AVAILABLE_ORDER_COUNT: = 6
 const EXPRESS_REQUIRED_LEVEL: = 3
 const MAX_PROFILE_VALUE: = 1000000000
@@ -38,6 +39,14 @@ var _deadline_msec: int = -1
 var _shift_seconds: float = -1.0
 var _last_broadcast_msec: int = 0
 var _vehicle_definitions: Dictionary = {}
+var _team_config: Dictionary = {}
+var _team_enabled: bool = false
+var _team_target: int = 0
+var _team_delivered: int = 0
+var _team_completed: bool = false
+var _team_awarded: Dictionary = {}
+var _handoff_offers: Dictionary = {}
+var _next_offer_id: int = 1
 
 
 func _ready() -> void :
@@ -50,6 +59,14 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 	_world = world
 	_balance = balance.duplicate(true)
 	_vehicle_definitions = VehicleCatalog.load_definitions()
+	_team_config = TeamShiftRules.load_config()
+	_team_enabled = TeamShiftRules.normalize_mode(config.get("shift_mode", "competitive")) == "team"
+	_team_target = 0
+	_team_delivered = 0
+	_team_completed = false
+	_team_awarded.clear()
+	_handoff_offers.clear()
+	_next_offer_id = 1
 	session_id = new_session_id
 	phase = "playing"
 	records.clear()
@@ -94,6 +111,7 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 			"displacement_velocity": Vector3.ZERO, "impact_pose_msec": _started_at_msec
 		}
 		spawn_index += 1
+	_team_target = records.size() * int(_team_config["deliveries_per_player"]) if _team_enabled else 0
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
 		var selected: String = str(record["profile"].get("selected_vehicle", ""))
@@ -127,6 +145,14 @@ func handle_request(peer_id: int, action: String, payload: Dictionary) -> void :
 			_spawn_vehicle(peer_id, payload)
 		"vehicle_toggle":
 			_toggle_vehicle(peer_id, payload)
+		"offer_handoff":
+			_offer_handoff(peer_id, payload)
+		"accept_handoff":
+			_accept_handoff(peer_id, payload)
+		"decline_handoff":
+			_decline_handoff(peer_id, payload)
+		"cancel_handoff":
+			_cancel_handoff(peer_id)
 
 
 func remove_player(peer_id: int) -> void :
@@ -135,6 +161,7 @@ func remove_player(peer_id: int) -> void :
 	var record: Dictionary = records[peer_id]
 	if not bool(record.get("connected", false)):
 		return
+	_clear_handoffs_for(peer_id)
 	record["connected"] = false
 	record["active_order"] = {}
 	record["carrying"] = false
@@ -156,6 +183,7 @@ func stop_session() -> void :
 	if phase == "offline":
 		return
 	phase = "offline"
+	_handoff_offers.clear()
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
 		record["active_order"] = {}
@@ -190,7 +218,8 @@ func snapshot_for(peer_id: int) -> Dictionary:
 		"session_id": session_id, "revision": revision, "phase": phase, 
 		"remaining": _remaining_seconds(now), "orders": visible_orders, 
 		"active_order": active_order, "profile": profile, "shift_stats": shift_stats, 
-		"players": _public_players(), "vehicles": _public_vehicles(), "leaderboard": _leaderboard()
+		"players": _public_players(), "vehicles": _public_vehicles(), "leaderboard": _leaderboard(),
+		"team": _team_snapshot(peer_id), "handoffs": _handoff_snapshot(peer_id, now)
 	}
 
 
@@ -215,13 +244,14 @@ func _advance_clock(now: int) -> bool:
 	if _deadline_msec >= 0 and now >= _deadline_msec:
 		_finish_shift(now)
 		return true
-	var expired: bool = false
+	var expired: bool = _cleanup_handoffs(now)
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
 		var active: Dictionary = record["active_order"]
 		if active.is_empty() or active.get("type", "standard") != "express":
 			continue
 		if _order_remaining(active, now) <= 0.0:
+			_clear_handoffs_for(int(peer_id))
 			record["active_order"] = {}
 			record["carrying"] = false
 			if not record["vehicle"].is_empty():
@@ -239,6 +269,7 @@ func _finish_shift(now: int = -1) -> void :
 	if now < 0:
 		now = Time.get_ticks_msec()
 	phase = "results"
+	_handoff_offers.clear()
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
 		record["active_order"] = {}
@@ -273,11 +304,14 @@ func _accept_order(peer_id: int, payload: Dictionary) -> void :
 		var accepted: Dictionary = order.duplicate(true)
 		accepted["state"] = "Accepted"
 		accepted["owner_id"] = peer_id
+		accepted["accepted_msec"] = Time.get_ticks_msec()
+		accepted["handoff_history"] = []
 		if accepted["type"] == "fragile":
 			accepted.merge(FragileRules.initial_fields(_balance), true)
 		accepted["remaining"] = float(accepted["time_limit"])
 		if accepted["type"] == "express":
 			accepted["deadline_msec"] = Time.get_ticks_msec() + int(float(accepted["time_limit"]) * 1000.0)
+		_clear_handoffs_for(peer_id)
 		record["active_order"] = accepted
 		_fill_orders()
 		_notice(peer_id, "Заказ принят. Идите к золотому маркеру и нажмите E.")
@@ -305,6 +339,7 @@ func _interact(peer_id: int) -> void :
 		return
 	if order_state == "Accepted":
 		active["state"] = "PickedUp"
+		active["pickup_msec"] = Time.get_ticks_msec()
 		_reset_impact_history(record)
 		record["carrying"] = true
 		_notice(peer_id, "Коробка у вас. Доставьте ее к бирюзовому маркеру.")
@@ -320,11 +355,13 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 		return
 	var remaining: float = _order_remaining(active, now)
 	if active["type"] == "express" and remaining <= 0.0:
+		_clear_handoffs_for(peer_id)
 		record["active_order"] = {}
 		record["carrying"] = false
 		_notice(peer_id, "Время экспресс-заказа вышло. Возьмите новый заказ.")
 		return
 
+	_clear_handoffs_for(peer_id)
 	var completed: Dictionary = active.duplicate(true)
 	completed["state"] = "Delivered"
 	record["active_order"] = {}
@@ -350,6 +387,11 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 	stats["xp"] = int(stats["xp"]) + xp
 	stats["best_delivery"] = maxi(int(stats["best_delivery"]), money)
 	_record_best_shift(record)
+	if _team_enabled:
+		_team_delivered += 1
+		if _team_target > 0 and _team_delivered >= _team_target:
+			_team_completed = true
+		_award_team_bonuses()
 	var level_notice: String = " · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""
 	_notice(peer_id, "Доставка завершена! +%d ₽ · +%d XP%s" % [money, xp, level_notice])
 
@@ -358,12 +400,225 @@ func _abandon_order(peer_id: int) -> void :
 	var record: Dictionary = records[peer_id]
 	if record["active_order"].is_empty():
 		return
+	_clear_handoffs_for(peer_id)
 	record["active_order"] = {}
 	record["carrying"] = false
 	if not record["vehicle"].is_empty():
 		record["vehicle"]["carrying"] = false
 	_notice(peer_id, "Заказ отменен. За завершенные доставки прогресс сохранен.")
 	_mark_changed()
+
+
+
+# A sender has at most one outstanding offer. Each receiver has at most one
+# incoming offer, so a confirmation can never choose a different parcel.
+func _offer_handoff(peer_id: int, payload: Dictionary) -> void:
+	var target_id: int = _request_peer_id(payload.get("target_id"))
+	var now: int = Time.get_ticks_msec()
+	if not _handoff_pair_valid(peer_id, target_id, now):
+		_notice(peer_id, "Передать посылку можно свободному курьеру рядом: оба должны быть пешком.")
+		return
+	if _handoff_offers.has(peer_id) or _has_incoming_handoff(target_id):
+		_notice(peer_id, "У вас или у получателя уже есть предложение передачи.")
+		return
+	if _next_offer_id > MAX_PEER_ID:
+		return
+	var order: Dictionary = records[peer_id]["active_order"]
+	_handoff_offers[peer_id] = {
+		"offer_id": _next_offer_id, "sender_id": peer_id, "target_id": target_id,
+		"order_id": int(order["id"]),
+		"deadline_msec": now + int(float(_team_config["offer_seconds"]) * 1000.0)
+	}
+	_next_offer_id += 1
+	_notice(peer_id, "Предложение отправлено. Получатель должен подтвердить передачу.")
+	_notice(target_id, "%s предлагает передать вам посылку." % str(records[peer_id]["name"]))
+	_mark_changed()
+
+
+func _accept_handoff(peer_id: int, payload: Dictionary) -> void:
+	var sender_id: int = _request_peer_id(payload.get("sender_id"))
+	var offer_id: int = _request_peer_id(payload.get("offer_id"))
+	if not _matching_handoff(peer_id, sender_id, offer_id):
+		_notice(peer_id, "Предложение передачи уже недоступно.")
+		return
+	var now: int = Time.get_ticks_msec()
+	var offer: Dictionary = _handoff_offers[sender_id]
+	var valid: bool = now < int(offer["deadline_msec"]) and _handoff_pair_valid(sender_id, peer_id, now)
+	if valid:
+		valid = int(records[sender_id]["active_order"].get("id", -1)) == int(offer["order_id"])
+	if not valid:
+		_handoff_offers.erase(sender_id)
+		_notice(peer_id, "Передача отменена. Подойдите к курьеру пешком и попробуйте снова.")
+		_mark_changed()
+		return
+	# Consume the exact offer before updating either record. Requests are processed
+	# on the Host thread; a replay cannot reward or transfer this parcel again.
+	_clear_handoffs_for(sender_id)
+	_clear_handoffs_for(peer_id)
+	var sender: Dictionary = records[sender_id]
+	var recipient: Dictionary = records[peer_id]
+	var active: Dictionary = sender["active_order"]
+	var history: Array = active.get("handoff_history", [])
+	history.append({"from_id": sender_id, "to_id": peer_id, "at_msec": now})
+	active["handoff_history"] = history
+	active["owner_id"] = peer_id
+	# Keep ID, type, deadline, accepted/pickup time, quality and impact cooldown.
+	sender["active_order"] = {}
+	sender["carrying"] = false
+	recipient["active_order"] = active
+	recipient["carrying"] = true
+	if not sender["vehicle"].is_empty():
+		sender["vehicle"]["carrying"] = false
+	if not recipient["vehicle"].is_empty():
+		recipient["vehicle"]["carrying"] = true
+	_reset_impact_history(sender)
+	_reset_impact_history(recipient)
+	_notice(sender_id, "Посылка передана курьеру %s." % str(recipient["name"]))
+	_notice(peer_id, "Посылка получена от %s. Доставьте её к бирюзовому маркеру." % str(sender["name"]))
+	_mark_changed()
+
+
+func _decline_handoff(peer_id: int, payload: Dictionary) -> void:
+	var sender_id: int = _request_peer_id(payload.get("sender_id"))
+	var offer_id: int = _request_peer_id(payload.get("offer_id"))
+	if not _matching_handoff(peer_id, sender_id, offer_id):
+		return
+	_handoff_offers.erase(sender_id)
+	_notice(sender_id, "Получатель отказался от передачи посылки.")
+	_mark_changed()
+
+
+func _cancel_handoff(peer_id: int) -> void:
+	if not _handoff_offers.has(peer_id):
+		return
+	_handoff_offers.erase(peer_id)
+	_notice(peer_id, "Предложение передачи отменено.")
+	_mark_changed()
+
+
+func _request_peer_id(value: Variant) -> int:
+	return int(value) if value is int and value > 0 and value <= MAX_PEER_ID else 0
+
+
+func _matching_handoff(receiver_id: int, sender_id: int, offer_id: int) -> bool:
+	if not _team_enabled or phase != "playing" or receiver_id == sender_id or offer_id <= 0:
+		return false
+	var offer: Dictionary = _handoff_offers.get(sender_id, {})
+	return not offer.is_empty() and int(offer.get("target_id", 0)) == receiver_id and int(offer.get("offer_id", 0)) == offer_id
+
+
+func _handoff_pair_valid(sender_id: int, receiver_id: int, now: int) -> bool:
+	if not _team_enabled or phase != "playing" or sender_id == receiver_id or sender_id <= 0 or receiver_id <= 0:
+		return false
+	if not records.has(sender_id) or not records.has(receiver_id):
+		return false
+	var sender: Dictionary = records[sender_id]
+	var receiver: Dictionary = records[receiver_id]
+	if not bool(sender.get("connected", false)) or not bool(receiver.get("connected", false)):
+		return false
+	if _is_riding(sender) or _is_riding(receiver) or not receiver["active_order"].is_empty():
+		return false
+	var active: Dictionary = sender["active_order"]
+	if active.get("state", "") != "PickedUp" or int(active.get("owner_id", 0)) != sender_id:
+		return false
+	if active.get("type", "") == "express" and _order_remaining(active, now) <= 0.0:
+		return false
+	var from: Vector3 = sender["position"]
+	var to: Vector3 = receiver["position"]
+	return _finite_vector(from) and _finite_vector(to) and from.distance_to(to) <= float(_team_config.get("handoff_distance", 3.2)) and _has_line_of_sight(from, to)
+
+
+func _has_incoming_handoff(peer_id: int) -> bool:
+	for offer_value: Variant in _handoff_offers.values():
+		var offer: Dictionary = offer_value
+		if int(offer.get("target_id", 0)) == peer_id:
+			return true
+	return false
+
+
+func _clear_handoffs_for(peer_id: int) -> void:
+	for sender_id: Variant in _handoff_offers.keys():
+		var offer: Dictionary = _handoff_offers[sender_id]
+		if int(sender_id) == peer_id or int(offer.get("target_id", 0)) == peer_id:
+			_handoff_offers.erase(sender_id)
+
+
+func _cleanup_handoffs(now: int) -> bool:
+	var removed: bool = false
+	for sender_value: Variant in _handoff_offers.keys():
+		var sender_id: int = int(sender_value)
+		var offer: Dictionary = _handoff_offers[sender_value]
+		var receiver_id: int = int(offer.get("target_id", 0))
+		var valid: bool = now < int(offer.get("deadline_msec", 0)) and _handoff_pair_valid(sender_id, receiver_id, now)
+		if valid:
+			valid = int(records[sender_id]["active_order"].get("id", -1)) == int(offer.get("order_id", -2))
+		if not valid:
+			_handoff_offers.erase(sender_value)
+			removed = true
+	return removed
+
+
+func _handoff_snapshot(peer_id: int, now: int) -> Dictionary:
+	var incoming: Array[Dictionary] = []
+	var outgoing: Dictionary = {}
+	for sender_value: Variant in _handoff_offers:
+		var sender_id: int = int(sender_value)
+		var offer: Dictionary = _handoff_offers[sender_value]
+		var remaining: float = maxf(0.0, float(int(offer["deadline_msec"]) - now) / 1000.0)
+		if remaining <= 0.0:
+			continue
+		var target_id: int = int(offer["target_id"])
+		var order: Dictionary = records[sender_id]["active_order"]
+		var visible: Dictionary = {
+			"offer_id": int(offer["offer_id"]), "sender_id": sender_id,
+			"target_id": target_id, "order_id": int(offer["order_id"]),
+			"title": str(order.get("title", "Посылка")), "remaining": remaining
+		}
+		if target_id == peer_id:
+			visible["name"] = str(records[sender_id]["name"])
+			incoming.append(visible)
+		if sender_id == peer_id:
+			visible["name"] = str(records[target_id]["name"])
+			outgoing = visible
+	return {"incoming": incoming, "outgoing": outgoing}
+
+
+func _team_snapshot(peer_id: int) -> Dictionary:
+	var record: Dictionary = records.get(peer_id, {})
+	var contributions: int = int(record.get("shift_stats", {}).get("deliveries", 0))
+	return {
+		"enabled": _team_enabled, "target": _team_target, "delivered": _team_delivered,
+		"completed": _team_completed, "bonus_money": int(_team_config.get("bonus_money", 500)),
+		"bonus_xp": int(_team_config.get("bonus_xp", 100)),
+		"eligible": _team_enabled and bool(record.get("connected", false)) and contributions > 0,
+		"bonus_awarded": _team_awarded.has(peer_id), "contributions": contributions
+	}
+
+
+func _award_team_bonuses() -> void:
+	if not _team_enabled or not _team_completed:
+		return
+	for peer_value: Variant in records:
+		var peer_id: int = int(peer_value)
+		var record: Dictionary = records[peer_value]
+		var stats: Dictionary = record["shift_stats"]
+		if not bool(record.get("connected", false)) or int(stats["deliveries"]) <= 0 or _team_awarded.has(peer_id):
+			continue
+		_team_awarded[peer_id] = true
+		var money: int = int(_team_config["bonus_money"])
+		var xp: int = int(_team_config["bonus_xp"])
+		var profile: Dictionary = record["profile"]
+		profile["money"] = int(profile["money"]) + money
+		profile["total_money_earned"] = int(profile["total_money_earned"]) + money
+		profile["xp"] = int(profile["xp"]) + xp
+		profile["level"] = _level_for_xp(int(profile["xp"]))
+		profile["rank"] = _rank_for_level(int(profile["level"]))
+		stats["money"] = int(stats["money"]) + money
+		stats["xp"] = int(stats["xp"]) + xp
+		stats["team_bonus_money"] = money
+		stats["team_bonus_xp"] = xp
+		_record_best_shift(record)
+		_notice(peer_id, "Командный план выполнен! Ваш бонус: +%d ₽ · +%d XP." % [money, xp])
 
 
 func _buy_vehicle(peer_id: int, payload: Dictionary) -> void :
@@ -480,6 +735,7 @@ func _toggle_vehicle(peer_id: int, payload: Dictionary) -> void :
 		record["yaw"] = vehicle["yaw"]
 
 
+	_clear_handoffs_for(peer_id)
 	_advance_vehicle_generation(record)
 	record["velocity"] = Vector3.ZERO
 	record["vehicle_speed"] = 0.0
@@ -685,6 +941,8 @@ func _accept_pose(peer_id: int, payload: Dictionary) -> void :
 		vehicle["velocity"] = record["velocity"]
 		vehicle["grounded"] = record["grounded"]
 		vehicle["carrying"] = carrying
+	if _cleanup_handoffs(now):
+		_mark_changed()
 	if impact_changed:
 		_notice(peer_id, "Хрупкая посылка повреждена: качество %d%% · бонус %d ₽." % [int(record["active_order"].get("quality", 100)), FragileRules.quality_bonus(record["active_order"])])
 		_mark_changed()
@@ -826,7 +1084,9 @@ func _public_players() -> Array[Dictionary]:
 		players.append({
 			"id": int(peer_id), "name": record["name"], "level": int(profile["level"]), "rank": str(profile["rank"]), 
 			"position": record["position"], "carrying": bool(record["carrying"]), "connected": bool(record["connected"]), 
-			"active_vehicle": _active_vehicle_type(record)
+			"active_vehicle": _active_vehicle_type(record),
+			"has_order": not record["active_order"].is_empty(),
+			"order_state": str(record["active_order"].get("state", ""))
 		})
 	return players
 
@@ -848,7 +1108,8 @@ func _leaderboard() -> Array[Dictionary]:
 		var stats: Dictionary = record["shift_stats"]
 		rows.append({
 			"id": int(peer_id), "name": record["name"], "money": int(stats["money"]), "xp": int(stats["xp"]), 
-			"deliveries": int(stats["deliveries"]), "best_delivery": int(stats["best_delivery"]), "connected": bool(record["connected"])
+			"deliveries": int(stats["deliveries"]), "best_delivery": int(stats["best_delivery"]), "connected": bool(record["connected"]),
+			"team_bonus_money": int(stats.get("team_bonus_money", 0)), "team_bonus_xp": int(stats.get("team_bonus_xp", 0))
 		})
 	rows.sort_custom( func(a: Dictionary, b: Dictionary) -> bool:
 		if a["money"] != b["money"]:
@@ -880,7 +1141,7 @@ func _order_remaining(order: Dictionary, now: int) -> float:
 
 
 func _empty_shift_stats() -> Dictionary:
-	return {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0}
+	return {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0, "team_bonus_money": 0, "team_bonus_xp": 0}
 
 
 func _record_best_shift(record: Dictionary) -> void :
@@ -928,7 +1189,7 @@ func _rank_for_level(level: int) -> String:
 
 
 func _notice(peer_id: int, message: String) -> void :
-	event_ready.emit(peer_id, {"type": "notice", "message": message})
+	event_ready.emit(peer_id, {"type": "notice", "message": message, "session_id": session_id})
 
 
 func _mark_changed() -> void :
