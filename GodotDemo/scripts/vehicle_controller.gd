@@ -8,7 +8,8 @@ signal impact(normal_speed: float)
 const RoundedGeometry = preload("res://scripts/rounded_geometry.gd")
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const GRAVITY: = 24.0
-const WORLD_BOUND: = 84.0
+const CityLayout = preload("res://scripts/city_layout.gd")
+const WORLD_BOUND: = CityLayout.HALF_SIZE - 2.5
 const WHEEL_RADIUS: = 0.43
 const IDENTITY_COLORS: = [
 	[Color("#246cdb"), Color("#164293"), Color("#428ae4")], 

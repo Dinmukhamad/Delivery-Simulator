@@ -267,7 +267,11 @@ class MapView extends Control:
 	var player_yaw: float = 0.0
 	var walk_last: bool = false
 	var target_picked: bool = false
+	const MINI_SPAN: float = 128.0
 	const PLAYER_COLORS: Array[Color] = [Color("e88062"), Color("658ed1"), Color("ae78b3"), Color("82a962")]
+
+	func _init() -> void:
+		clip_contents = true
 
 	func set_layout(value: Dictionary) -> void:
 		layout = value.duplicate(true)
@@ -292,21 +296,45 @@ class MapView extends Control:
 		other_players = players.duplicate(true)
 		queue_redraw()
 
+	func _world_bounds() -> Rect2:
+		return layout.get("bounds", Rect2(-258.0, -258.0, 516.0, 516.0))
+
+	func _view_bounds() -> Rect2:
+		var bounds: Rect2 = _world_bounds()
+		if large:
+			return bounds
+		var span: Vector2 = Vector2(minf(MINI_SPAN, bounds.size.x), minf(MINI_SPAN, bounds.size.y))
+		var origin: Vector2 = Vector2(player_position.x, player_position.z) - span * 0.5
+		origin = origin.clamp(bounds.position, bounds.end - span)
+		return Rect2(origin, span)
+
 	func _map_rect() -> Rect2:
 		var padding: float = 20.0 if large else 9.0
 		var side: float = maxf(1.0, minf(size.x, size.y) - padding * 2.0)
 		return Rect2((size - Vector2.ONE * side) * 0.5, Vector2.ONE * side)
 
 	func _point(position: Vector3) -> Vector2:
-		var bounds: Rect2 = layout.get("bounds", Rect2(-86.0, -86.0, 172.0, 172.0))
+		var bounds: Rect2 = _view_bounds()
 		var uv: Vector2 = (Vector2(position.x, position.z) - bounds.position) / bounds.size
 		var area: Rect2 = _map_rect()
-		return area.position + area.size * uv.clamp(Vector2.ZERO, Vector2.ONE)
+		# Keep the projection unbounded: clamping every route vertex would create false edge routes.
+		return area.position + area.size * uv
 
 	func _rect(rect: Rect2) -> Rect2:
-		var a: Vector2 = _point(Vector3(rect.position.x, 0.0, rect.position.y))
-		var b: Vector2 = _point(Vector3(rect.end.x, 0.0, rect.end.y))
+		var visible: Rect2 = rect.intersection(_view_bounds())
+		if not visible.has_area():
+			return Rect2()
+		var a: Vector2 = _point(Vector3(visible.position.x, 0.0, visible.position.y))
+		var b: Vector2 = _point(Vector3(visible.end.x, 0.0, visible.end.y))
 		return Rect2(a, b - a)
+
+	func _visible(position: Vector3) -> bool:
+		return _view_bounds().has_point(Vector2(position.x, position.z))
+
+	func _paint_rect(rect: Rect2, color: Color) -> void:
+		var box: Rect2 = _rect(rect)
+		if box.has_area():
+			draw_rect(box, color)
 
 	func _caption(point: Vector2, value: String, color: Color) -> void:
 		var location: Vector2 = Vector2(clampf(point.x + 9.0, 8.0, maxf(8.0, size.x - 128.0)), clampf(point.y - 6.0, 18.0, size.y - 6.0))
@@ -319,39 +347,140 @@ class MapView extends Control:
 		draw_line(tip, tip - direction.rotated(0.55) * length, color, 2.0, true)
 		draw_line(tip, tip - direction.rotated(-0.55) * length, color, 2.0, true)
 
+	func _clip_segment(a: Vector2, b: Vector2) -> PackedVector2Array:
+		# Liang-Barsky clipping preserves the actual road segment at the local map boundary.
+		var area: Rect2 = _map_rect()
+		var delta: Vector2 = b - a
+		var first: float = 0.0
+		var last: float = 1.0
+		for pair: Vector2 in [Vector2(-delta.x, a.x - area.position.x), Vector2(delta.x, area.end.x - a.x), Vector2(-delta.y, a.y - area.position.y), Vector2(delta.y, area.end.y - a.y)]:
+			if absf(pair.x) < 0.00001:
+				if pair.y < 0.0:
+					return PackedVector2Array()
+				continue
+			var fraction: float = pair.y / pair.x
+			if pair.x < 0.0:
+				first = maxf(first, fraction)
+			else:
+				last = minf(last, fraction)
+			if first > last:
+				return PackedVector2Array()
+		return PackedVector2Array([a + delta * first, a + delta * last])
+
+	func _draw_district_labels() -> void:
+		var font: Font = ThemeDB.fallback_font
+		for entry: Dictionary in layout.get("districts", []):
+			var box: Rect2 = _rect(entry.get("rect", Rect2()))
+			if not box.has_area():
+				continue
+			var name_value: String = String(entry.get("name", ""))
+			var width: float = maxf(1.0, box.size.x - 8.0)
+			var font_size: int = 11
+			var lines: Array[String] = [name_value]
+			if font.get_string_size(name_value, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x > width:
+				var split: int = name_value.rfind(" ")
+				if split > 0:
+					lines = [name_value.substr(0, split), name_value.substr(split + 1)]
+			var center: Vector2 = box.get_center()
+			var label_height: float = lines.size() * 13.0 + 6.0
+			draw_rect(Rect2(center - Vector2(width * 0.5, label_height * 0.5), Vector2(width, label_height)), Color(1.0, 0.98, 0.94, 0.82))
+			for index: int in lines.size():
+				var text_width: float = minf(width, font.get_string_size(lines[index], HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x)
+				var baseline: Vector2 = center + Vector2(-text_width * 0.5, -label_height * 0.5 + 14.0 + index * 13.0)
+				draw_string(font, baseline, lines[index], HORIZONTAL_ALIGNMENT_LEFT, width, font_size, Color("435b57"))
+
+	func current_district() -> String:
+		var position: Vector2 = Vector2(player_position.x, player_position.z)
+		for entry: Dictionary in layout.get("districts", []):
+			var rect: Rect2 = entry.get("rect", Rect2())
+			if rect.has_point(position):
+				return String(entry.get("name", "Город"))
+		return "Город"
+
+	func _draw_target() -> void:
+		var target_color: Color = Color("247b72") if target_picked else Color("e8b653")
+		if _visible(target_position):
+			var target: Vector2 = _point(target_position)
+			draw_circle(target, 10.0 if large else 6.0, Color("fffaf0"))
+			draw_circle(target, 7.0 if large else 4.0, target_color)
+			if large:
+				_caption(target, "Доставка" if target_picked else "Получение", Color("243b3a"))
+		elif not large:
+			# This is only a direction marker; the route itself always follows confirmed navigation points.
+			var area: Rect2 = _map_rect().grow(-8.0)
+			var player_point: Vector2 = _point(player_position)
+			var origin: Vector2 = player_point.clamp(area.position, area.end)
+			var direction: Vector2 = (_point(target_position) - player_point).normalized()
+			var distance_x: float = INF
+			var distance_y: float = INF
+			if direction.x > 0.0001:
+				distance_x = (area.end.x - origin.x) / direction.x
+			elif direction.x < -0.0001:
+				distance_x = (area.position.x - origin.x) / direction.x
+			if direction.y > 0.0001:
+				distance_y = (area.end.y - origin.y) / direction.y
+			elif direction.y < -0.0001:
+				distance_y = (area.position.y - origin.y) / direction.y
+			var reach: float = maxf(0.0, minf(distance_x, distance_y))
+			var edge: Vector2 = origin + direction * reach
+			draw_circle(edge, 7.0, Color("fffaf0"))
+			draw_colored_polygon(PackedVector2Array([edge + direction * 6.0, edge + direction.rotated(2.45) * 5.0, edge + direction.rotated(-2.45) * 5.0]), target_color)
+
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color("eae9dc"))
 		draw_rect(_map_rect(), Color("b9d1a2"))
-		if layout.has("park"):
-			draw_rect(_rect(layout["park"]), Color("89b67b"))
+		for district: Dictionary in layout.get("districts", []):
+			var district_color: Color = district.get("color", Color("cbd5bb"))
+			_paint_rect(district.get("rect", Rect2()), district_color.lerp(Color("dfe5d1"), 0.55))
+		var parks: Array = layout.get("parks", [])
+		if parks.is_empty() and layout.has("park"):
+			parks = [layout["park"]]
+		for park: Rect2 in parks:
+			_paint_rect(park, Color("89b67b"))
 		for path: Rect2 in layout.get("paths", []):
-			draw_rect(_rect(path), Color("e5dac0"))
+			_paint_rect(path, Color("e5dac0"))
 		for road: Rect2 in layout.get("roads", []):
-			draw_rect(_rect(road), Color("f8f5ea"))
+			_paint_rect(road, Color("f8f5ea"))
 		for entry: Dictionary in layout.get("buildings", []):
 			var box: Rect2 = _rect(entry["rect"])
+			if not box.has_area():
+				continue
 			var tint: Color = entry.get("color", Color("c7c3b1"))
 			draw_rect(box, tint.lerp(Color("c6c5b5"), 0.6))
 			draw_rect(box, Color("a9b2a1"), false, 1.0)
-		var fountain: Vector2 = _point(Vector3(64.0, 0.0, -65.0))
-		draw_circle(fountain, _map_rect().size.x * 5.3 / 172.0, Color("69bdca"))
+		var fountains: Array = layout.get("fountains", [{"position": Vector3(64.0, 0.0, -65.0), "radius": 5.3}])
+		for fountain: Dictionary in fountains:
+			var position: Vector3 = fountain.get("position", Vector3.ZERO)
+			if _visible(position):
+				var radius: float = float(fountain.get("radius", 5.3)) * _map_rect().size.x / _view_bounds().size.x
+				draw_circle(_point(position), radius, Color("69bdca"))
+		if large:
+			_draw_district_labels()
 		for pickup: Dictionary in layout.get("pickups", []):
-			var point: Vector2 = _point(pickup["position"])
-			draw_circle(point, 3.5 if large else 2.2, Color("c9a55b"))
+			var position: Vector3 = pickup["position"]
+			if _visible(position):
+				draw_circle(_point(position), 3.5 if large else 2.2, Color("c9a55b"))
 		if large:
 			for delivery: Dictionary in layout.get("deliveries", []):
-				draw_circle(_point(delivery["position"]), 2.3, Color("8b9c87"))
-		var garage: Vector2 = _point(layout.get("garage", Vector3(-66.0, 0.0, 23.0)))
-		draw_rect(Rect2(garage - Vector2.ONE * 4.0, Vector2.ONE * 8.0), Color("567a83"))
+				var position: Vector3 = delivery["position"]
+				if _visible(position):
+					draw_circle(_point(position), 2.3, Color("8b9c87"))
+		var garage_position: Vector3 = layout.get("garage", Vector3(-66.0, 0.0, 23.0))
+		if _visible(garage_position):
+			var garage: Vector2 = _point(garage_position)
+			draw_rect(Rect2(garage - Vector2.ONE * 4.0, Vector2.ONE * 8.0), Color("567a83"))
+			if large:
+				_caption(garage, "Гараж", Color("243b3a"))
 		if large:
-			_caption(garage, "Гараж", Color("243b3a"))
-			_caption(_point(Vector3(-23.0, 0.0, 23.0)), "Склад", Color("243b3a"))
-			_caption(_point(Vector3(64.0, 0.0, -55.0)), "Парк", Color("486e44"))
+			_caption(_point(layout.get("depot", Vector3(-23.0, 0.0, 23.0))), "Склад", Color("243b3a"))
 		# No player-to-target straight-line fallback.
 		if has_target:
 			for i: int in range(1, route_points.size()):
-				var a: Vector2 = _point(route_points[i - 1])
-				var b: Vector2 = _point(route_points[i])
+				var segment: PackedVector2Array = _clip_segment(_point(route_points[i - 1]), _point(route_points[i]))
+				if segment.size() != 2:
+					continue
+				var a: Vector2 = segment[0]
+				var b: Vector2 = segment[1]
 				var walking: bool = walk_last and i == route_points.size() - 1
 				var color: Color = Color("dca438") if walking else Color("247b72")
 				draw_line(a, b, Color("fffaf0"), 7.0 if large else 5.0, true)
@@ -365,17 +494,14 @@ class MapView extends Control:
 					draw_line(a, b, color, 4.0 if large else 2.5, true)
 				if a.distance_to(b) > 13.0:
 					_arrow(a, b, color.darkened(0.2))
-			var target: Vector2 = _point(target_position)
-			var target_color: Color = Color("247b72") if target_picked else Color("e8b653")
-			draw_circle(target, 10.0 if large else 6.0, Color("fffaf0"))
-			draw_circle(target, 7.0 if large else 4.0, target_color)
-			if large:
-				_caption(target, "Доставка" if target_picked else "Получение", Color("243b3a"))
+			_draw_target()
 		for value: Variant in other_players:
 			if not value is Dictionary:
 				continue
 			var entry: Dictionary = value
 			if not bool(entry.get("connected", true)) or not entry.get("position", Vector3.ZERO) is Vector3:
+				continue
+			if not _visible(entry["position"]):
 				continue
 			var peer: Vector2 = _point(entry["position"])
 			var color_index: int = posmod(int(entry.get("id", 0)), PLAYER_COLORS.size())
@@ -389,7 +515,19 @@ class MapView extends Control:
 		var radius: float = 8.0 if large else 5.0
 		var triangle: PackedVector2Array = PackedVector2Array([player + forward * radius, player + forward.rotated(2.45) * radius, player + forward.rotated(-2.45) * radius])
 		draw_colored_polygon(triangle, Color("195b57"))
-		draw_string(ThemeDB.fallback_font, _map_rect().position + Vector2(5, 16), "N ↑", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13 if large else 10, Color("526454"))
+		var area: Rect2 = _map_rect()
+		if not large:
+			draw_rect(Rect2(area.position, Vector2(area.size.x, 18.0)), Color(1.0, 0.98, 0.94, 0.86))
+			draw_string(ThemeDB.fallback_font, area.position + Vector2(4, 13), current_district(), HORIZONTAL_ALIGNMENT_LEFT, maxf(1.0, area.size.x - 29.0), 9, Color("435b57"))
+		draw_string(ThemeDB.fallback_font, area.position + Vector2(area.size.x - 25, 13), "N ↑", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11 if large else 9, Color("526454"))
+		var meters: float = 100.0 if large else 25.0
+		var scale_width: float = meters * area.size.x / _view_bounds().size.x
+		var scale_start: Vector2 = area.position + Vector2(7.0, area.size.y - 10.0)
+		draw_rect(Rect2(scale_start - Vector2(3.0, 15.0), Vector2(scale_width + 6.0, 21.0)), Color(1.0, 0.98, 0.94, 0.88))
+		draw_line(scale_start, scale_start + Vector2(scale_width, 0.0), Color("526454"), 2.0, true)
+		draw_line(scale_start - Vector2(0.0, 3.0), scale_start + Vector2(0.0, 3.0), Color("526454"), 1.0, true)
+		draw_line(scale_start + Vector2(scale_width, -3.0), scale_start + Vector2(scale_width, 3.0), Color("526454"), 1.0, true)
+		draw_string(ThemeDB.fallback_font, scale_start - Vector2(0.0, 5.0), "%d м" % int(meters), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 10, Color("526454"))
 
 
 func _ready() -> void :
@@ -555,6 +693,9 @@ func _resize_scroll_overlays() -> void :
 		panel.custom_minimum_size.x = scroll.custom_minimum_size.x - 14.0
 	if is_instance_valid(_garage_grid):
 		_garage_grid.columns = 3 if available.x >= 800.0 else (2 if available.x >= 570.0 else 1)
+	if is_instance_valid(_full_map):
+		# Keep the whole city visible when M opens, including on a 960 × 540 window.
+		_full_map.custom_minimum_size.y = clampf(available.y - 185.0, 260.0, 440.0)
 
 
 func _compact_button(text_value: String, callback: Callable, secondary: bool = false) -> Button:
@@ -1291,7 +1432,9 @@ func _build_map() -> void :
 	_full_map.custom_minimum_size = Vector2(580, 440)
 	_full_map.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	content.add_child(_full_map)
-	content.add_child(_label("▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть", 12, MUTED))
+	var legend: Label = _label("▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть\nМини-карта показывает соседние улицы; здесь — весь город и его районы.", 12, MUTED)
+	legend.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(legend)
 	_map_route_label = _label("", 13, TEAL)
 	_map_route_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_map_route_label)
@@ -1944,10 +2087,20 @@ func set_orders(orders: Array[Dictionary]) -> void :
 		card.add_child(row)
 		var details: VBoxContainer = _vbox(row, 3)
 		details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		details.add_child(_label(String(order.get("title", "Доставка")), 17))
+		var card_title: Label = _label(String(order.get("title", "Доставка")), 17)
+		card_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		card_title.custom_minimum_size.x = 180.0
+		details.add_child(card_title)
 		var route: Label = _label("%s → %s" % [String(order.get("pickup_name", "")), String(order.get("delivery_name", ""))], 13, MUTED)
 		route.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		details.add_child(route)
+		var district_route: String = String(order.get("district_route", ""))
+		if not district_route.is_empty():
+			var district_hint: Label = _label(district_route, 12, MUTED)
+			district_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			details.add_child(district_hint)
+		if String(order.get("route_band", "")) == "regional":
+			details.add_child(_label("Между районами · удобно на транспорте", 12, TEAL))
 		details.add_child(_label("%s · %d м · %d XP" % [String(order.get("type_name", "Обычная")), int(order.get("distance", 0)), int(order.get("xp", 0))], 12, TEAL))
 		var action: VBoxContainer = _vbox(row, 4)
 		var fragile: bool = String(order.get("type", "")) == "fragile"

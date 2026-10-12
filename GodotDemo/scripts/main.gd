@@ -12,14 +12,16 @@ const FragileRules = preload("res://scripts/fragile_rules.gd")
 const SettingsService = preload("res://scripts/settings_service.gd")
 const AudioManagerScript = preload("res://scripts/audio_manager.gd")
 const NavigationService = preload("res://scripts/navigation_service.gd")
+const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.10.0"
+const DEMO_VERSION: = "0.11.0"
 
 var city
 var player
 var hud
 var profile: Dictionary = {}
 var balance: Dictionary = {}
+var city_order_config: Dictionary = {}
 var orders: Array[Dictionary] = []
 var active_order: Dictionary = {}
 var state: String = "menu"
@@ -53,6 +55,7 @@ func _ready() -> void :
 	test_mode = OS.get_cmdline_user_args().has("--test-mode")
 	_define_input()
 	balance = _load_balance()
+	city_order_config = CityOrderRules.load_config()
 	vehicle_defs = VehicleCatalogScript.load_definitions()
 	profile = _load_profile()
 	city = WorldScript.new()
@@ -250,38 +253,11 @@ func _begin_shift() -> void :
 func _reset_shift_stats() -> void :
 	shift_stats = {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0}
 
-func _make_order(first: bool = false) -> Dictionary:
-	var pickup: Dictionary = city.pickup_points[0] if first else city.pickup_points.pick_random()
-	var options: Array[Dictionary] = []
-	for candidate: Dictionary in city.delivery_points:
-		var distance: float = pickup["position"].distance_to(candidate["position"])
-		if distance <= 120.0 and distance >= 8.0:
-			options.append(candidate)
-	if options.is_empty():
-		options.assign(city.delivery_points)
-	var destination: Dictionary = city.delivery_points[0] if first else options.pick_random()
-	var length: float = pickup["position"].distance_to(destination["position"])
-	var is_fragile: bool = not first and int(profile["level"]) >= FragileRules.required_level(balance) and randf() < clampf(float(balance.get("fragile_chance", 0.25)), 0.0, 1.0)
-	var is_express: bool = not first and not is_fragile and int(profile["level"]) >= int(balance.get("express_required_level", 3)) and randf() < 0.3
-	var base: int = randi_range(int(balance.get("base_reward_min", 110)), int(balance.get("base_reward_max", 160))) + int(round(length * float(balance.get("distance_reward", 3.5))))
-	var multiplier: float = float(balance.get("fragile_multiplier", 1.3)) if is_fragile else (float(balance.get("express_multiplier", 1.5)) if is_express else 1.0)
-	var order: Dictionary = {
-		"id": next_order_id, 
-		"title": "%s → %s" % [pickup["name"], destination["name"]], 
-		"type": "fragile" if is_fragile else ("express" if is_express else "standard"), 
-		"type_name": "Хрупкий груз" if is_fragile else ("Экспресс" if is_express else "Стандарт"), 
-		"pickup_name": pickup["name"], "delivery_name": destination["name"], 
-		"pickup_position": pickup["position"], "delivery_position": destination["position"], 
-		"pickup_id": pickup["id"], "delivery_id": destination["id"], 
-		"distance": length, "base_reward": base, "reward": int(round(base * multiplier)), 
-		"xp": int(balance.get("fragile_xp", 75)) if is_fragile else (int(balance.get("express_xp", 75)) if is_express else int(balance.get("standard_xp", 50))), 
-		"required_level": FragileRules.required_level(balance) if is_fragile else (int(balance.get("express_required_level", 3)) if is_express else 1), 
-		"time_limit": maxf(45.0, length / 4.5 * 1.7 + 18.0), 
-		"state": "Available", "locked": false
-	}
-	if is_fragile:
-		order.merge(FragileRules.initial_fields(balance), true)
-	next_order_id += 1
+func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
+	var couriers: Array = [{"profile": profile, "position": player.position}]
+	var order: Dictionary = CityOrderRules.make_order(next_order_id, city.pickup_points, city.delivery_points, balance, couriers, vehicle_defs, city_order_config, first, local_only)
+	if not order.is_empty():
+		next_order_id += 1
 	return order
 
 func _fill_orders(first: bool = false) -> void :
@@ -289,7 +265,11 @@ func _fill_orders(first: bool = false) -> void :
 		return
 	var count: int = clampi(int(balance.get("available_orders", 6)), 1, 10)
 	while orders.size() < count:
-		orders.append(_make_order(first and orders.is_empty()))
+		var local_only: bool = CityOrderRules.local_order_count(orders, city_order_config) < int(city_order_config["minimum_local_orders"])
+		var order: Dictionary = _make_order(first and orders.is_empty(), local_only)
+		if order.is_empty():
+			break
+		orders.append(order)
 	hud.set_orders(orders)
 
 func _accept_order(order_id: int) -> void :

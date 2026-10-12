@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +47,7 @@ jobs:
           mkdir -p build-reports
           python3 - <<'PY'
           import os, pathlib, subprocess
-          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--editor", "--path", "GodotDemo", "--quit"], capture_output=True, text=True, timeout=180)
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--editor", "--path", "GodotDemo", "--quit"], capture_output=True, text=True, timeout=360)
           output = result.stdout + result.stderr
           pathlib.Path("build-reports/editor-import.log").write_text(output)
           print(output)
@@ -59,19 +59,32 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, pathlib, subprocess
-          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/navigation_routes.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/navigation_routes.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=360)
           output = result.stdout + result.stderr
           pathlib.Path("build-reports/navigation-tests.log").write_text(output)
           print(output)
           if result.returncode or "SCRIPT ERROR:" in output or "NAVIGATION_TESTS:" not in output:
               raise SystemExit("Navigation checks failed")
           PY
+      - name: Verify expanded city and delivery generation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          for name, marker in [("city_layout", "CITY_LAYOUT_TESTS:"), ("city_orders", "CITY_ORDER_TESTS:")]:
+              result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/" + name + ".gd", "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+              output = result.stdout + result.stderr
+              pathlib.Path("build-reports/" + name + "-tests.log").write_text(output)
+              print(output)
+              if result.returncode or "SCRIPT ERROR:" in output or marker not in output:
+                  raise SystemExit("Expanded city checks failed: " + name)
+          PY
       - name: Verify Team Shift server rules
         shell: bash
         run: |
           python3 - <<'PY'
           import os, pathlib, subprocess
-          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/team_shift.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/team_shift.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=360)
           output = result.stdout + result.stderr
           pathlib.Path("build-reports/team-tests.log").write_text(output)
           print(output)
@@ -156,6 +169,46 @@ jobs:
                   for role in handles:
                       print("TEAM_PEER_LOG " + role + "\\n" + (reports / ("team-lan-" + role + ".log")).read_text())
           PY
+      - name: Verify LAN delivery beyond former city boundary
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tempfile, time
+          reports = pathlib.Path("build-reports")
+          with tempfile.TemporaryDirectory() as coord:
+              handles, processes = {}, {}
+              try:
+                  for role in ["host", "client"]:
+                      if role == "client":
+                          deadline = time.monotonic() + 20
+                          while not pathlib.Path(coord, "host-ready").exists():
+                              if time.monotonic() > deadline or processes["host"].poll() is not None:
+                                  raise RuntimeError("City Host did not open lobby")
+                              time.sleep(0.05)
+                      handles[role] = open(reports / ("city-lan-" + role + ".log"), "w")
+                      env = os.environ.copy()
+                      env["XDG_DATA_HOME"] = str(pathlib.Path(coord, role, "data"))
+                      env["XDG_CONFIG_HOME"] = str(pathlib.Path(coord, role, "config"))
+                      env["DELIVERY_TEAM_TEST_SAVE"] = "0"
+                      cmd = [os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/lan_city_peer.gd", "--", "--test-mode", "--role=" + role, "--coord=" + coord]
+                      processes[role] = subprocess.Popen(cmd, stdout=handles[role], stderr=subprocess.STDOUT, env=env)
+                  for role in ["client", "host"]:
+                      code = processes[role].wait(timeout=75)
+                      handles[role].flush()
+                      log = (reports / ("city-lan-" + role + ".log")).read_text()
+                      print(log)
+                      if code or "SCRIPT ERROR:" in log or "LAN_CITY_" not in log:
+                          raise RuntimeError("Expanded city LAN checks failed: " + role)
+              finally:
+                  for process in processes.values():
+                      if process.poll() is None:
+                          process.kill()
+                          process.wait()
+                  for handle in handles.values():
+                      handle.close()
+                  for role in handles:
+                      print("CITY_PEER_LOG " + role + "\\n" + (reports / ("city-lan-" + role + ".log")).read_text())
+          PY
       - name: Install software rendering support
         shell: bash
         run: |
@@ -173,7 +226,7 @@ jobs:
               cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", editor, "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/navigation_visual.gd", "--", "--test-mode", "--width=" + str(width), "--capture=" + capture]
               env = os.environ.copy()
               env["LIBGL_ALWAYS_SOFTWARE"] = "1"
-              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
               log = result.stdout + result.stderr
               (reports / ("visual-" + str(width) + ".log")).write_text(log)
               print(log)
@@ -192,12 +245,36 @@ jobs:
               cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", os.environ["GODOT_BINARY"], "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/team_visual.gd", "--", "--test-mode", "--width=" + str(width), "--screen=" + page, "--capture=" + capture]
               env = os.environ.copy()
               env["LIBGL_ALWAYS_SOFTWARE"] = "1"
-              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
               log = result.stdout + result.stderr
               (reports / ("team-visual-" + page + "-" + str(width) + ".log")).write_text(log)
               print(log)
               if result.returncode or "SCRIPT ERROR:" in log or "TEAM_VISUAL:" not in log:
                   raise SystemExit("Team render check failed")
+              encoded = base64.b64encode(pathlib.Path(capture).read_bytes()).decode("ascii")
+              print("SCREENSHOT_BEGIN " + name)
+              for offset in range(0, len(encoded), 4000):
+                  print("SCREENSHOT_DATA " + encoded[offset:offset + 4000])
+              print("SCREENSHOT_END " + name)
+          PY
+      - name: Capture expanded districts and full city map
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, os, pathlib, subprocess
+          reports = pathlib.Path("build-reports")
+          for district, width in [("business", 1280), ("industrial", 1280), ("residential", 1280), ("park", 1280), ("map", 1280), ("map", 960)]:
+              name = "city-" + district + "-" + str(width) + ".png"
+              capture = str((reports / name).resolve())
+              cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", os.environ["GODOT_BINARY"], "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/city_visual.gd", "--", "--test-mode", "--width=" + str(width), "--district=" + district, "--capture=" + capture]
+              env = os.environ.copy()
+              env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+              log = result.stdout + result.stderr
+              (reports / ("city-visual-" + district + "-" + str(width) + ".log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "CITY_VISUAL:" not in log:
+                  raise SystemExit("City render check failed: " + district)
               encoded = base64.b64encode(pathlib.Path(capture).read_bytes()).decode("ascii")
               print("SCREENSHOT_BEGIN " + name)
               for offset in range(0, len(encoded), 4000):
@@ -268,18 +345,26 @@ jobs:
           script = str(pathlib.Path("GodotDemo/tests/navigation_routes.gd").resolve())
           team_script = str(pathlib.Path("GodotDemo/tests/team_shift.gd").resolve())
           for tag, pack in [("windows", exe), ("macos", pck)]:
-              result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+              result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", script, "--", "--test-mode"], capture_output=True, text=True, timeout=360)
               log = result.stdout + result.stderr
               (reports / (tag + "-packed-tests.log")).write_text(log)
               print(log)
               if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_TESTS:" not in log:
                   raise SystemExit("Packed checks failed: " + tag)
-              team_result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", team_script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+              team_result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", team_script, "--", "--test-mode"], capture_output=True, text=True, timeout=360)
               team_log = team_result.stdout + team_result.stderr
               (reports / (tag + "-packed-team-tests.log")).write_text(team_log)
               print(team_log)
               if team_result.returncode or "SCRIPT ERROR:" in team_log or "TEAM_SHIFT_TESTS:" not in team_log:
                   raise SystemExit("Packed Team Shift checks failed: " + tag)
+              for extra, marker in [("city_layout", "CITY_LAYOUT_TESTS:"), ("city_orders", "CITY_ORDER_TESTS:")]:
+                  extra_script = str(pathlib.Path("GodotDemo/tests/" + extra + ".gd").resolve())
+                  extra_result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", extra_script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+                  extra_log = extra_result.stdout + extra_result.stderr
+                  (reports / (tag + "-packed-" + extra + "-tests.log")).write_text(extra_log)
+                  print(extra_log)
+                  if extra_result.returncode or "SCRIPT ERROR:" in extra_log or marker not in extra_log:
+                      raise SystemExit("Packed city checks failed: " + tag + "/" + extra)
           PY
       - name: Package downloadable game and source archives
         shell: bash
@@ -288,10 +373,11 @@ jobs:
           import hashlib, json, os, pathlib, shutil, zipfile
           dest = pathlib.Path("downloads")
           dest.mkdir(exist_ok=True)
-          guide = """Delivery Simulator Demo 0.10.0
+          guide = """Delivery Simulator Demo 0.11.0
           Windows: unpack the archive and start DeliverySimulatorDemo.exe.
           macOS: unpack the archive and open Delivery Simulator.app.
           Controls: WASD, Mouse, Shift, Space, E, F, M (map), Tab, Esc.
+          City: 516 x 516 metres, three times wider and longer. Explore the business, retail, industrial, residential and park districts; the local mini-map remains zoomed around your courier.
           LAN: Host Game on one computer; Join Game with the Host IPv4 address on the other. UDP port 7777, matching game versions, same local network.
           Map: streets and buildings match the actual city; teal route, gold pickup, teal delivery, gold dashed final walking access.
           Team Shift: select Team mode when hosting. Complete 4 deliveries per starting player; each connected courier with a completed personal delivery receives 500 Money and 100 XP once. Tab offers/accepts parcel handoffs near a free teammate on foot.
@@ -300,21 +386,21 @@ jobs:
           Original generated audio: CC0 1.0, https://creativecommons.org/publicdomain/zero/1.0/
           """
           (pathlib.Path("builds/Windows") / "README.txt").write_text(guide)
-          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.10.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.11.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for p in pathlib.Path("builds/Windows").rglob("*"):
                   if p.is_file():
-                      z.write(p, "DeliverySimulatorDemo_Windows_v0.10.0/" + str(p.relative_to("builds/Windows")))
-          maczip = dest / "DeliverySimulatorDemo_macOS_v0.10.0.zip"
+                      z.write(p, "DeliverySimulatorDemo_Windows_v0.11.0/" + str(p.relative_to("builds/Windows")))
+          maczip = dest / "DeliverySimulatorDemo_macOS_v0.11.0.zip"
           shutil.copy2("builds/macOS/Delivery Simulator.zip", maczip)
           with zipfile.ZipFile(maczip, "a", zipfile.ZIP_DEFLATED) as z:
               z.writestr("README.txt", guide)
-          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Source_v0.10.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Source_v0.11.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
               for p in pathlib.Path("GodotDemo").rglob("*"):
                   if p.is_file() and not any(part in [".godot", ".git", ".autoconverted", ".gdre"] for part in p.parts):
-                      z.write(p, "DeliverySimulatorDemo_Source_v0.10.0/" + str(p.relative_to("GodotDemo")))
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.11.0/" + str(p.relative_to("GodotDemo")))
               for p in pathlib.Path("docs").rglob("*"):
                   if p.is_file():
-                      z.write(p, "DeliverySimulatorDemo_Source_v0.10.0/docs/" + str(p.relative_to("docs")))
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.11.0/docs/" + str(p.relative_to("docs")))
           hashes = []
           for p in sorted(dest.glob("*.zip")):
               with zipfile.ZipFile(p) as z:
@@ -323,7 +409,7 @@ jobs:
               digest = hashlib.sha256(p.read_bytes()).hexdigest()
               hashes.append(digest + "  " + p.name)
           (dest / "SHA256SUMS.txt").write_text("\n".join(hashes) + "\n")
-          report = {"version": "0.10.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "team_rules_and_packs": "passed", "team_lan_and_isolated_saves": "passed", "team_visual": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
+          report = {"version": "0.11.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "team_rules_and_packs": "passed", "team_lan_and_isolated_saves": "passed", "team_visual": "passed", "expanded_city": "passed", "district_visuals": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
           pathlib.Path("build-reports/build.json").write_text(json.dumps(report, indent=2) + "\n")
           print(json.dumps(report))
           PY
@@ -335,16 +421,16 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-Windows-v0.10.0
-          path: downloads/DeliverySimulatorDemo_Windows_v0.10.0.zip
+          name: DeliverySimulatorDemo-Windows-v0.11.0
+          path: downloads/DeliverySimulatorDemo_Windows_v0.11.0.zip
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-macOS-v0.10.0
-          path: downloads/DeliverySimulatorDemo_macOS_v0.10.0.zip
+          name: DeliverySimulatorDemo-macOS-v0.11.0
+          path: downloads/DeliverySimulatorDemo_macOS_v0.11.0.zip
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: DeliverySimulatorDemo-Source-v0.10.0
-          path: downloads/DeliverySimulatorDemo_Source_v0.10.0.zip
+          name: DeliverySimulatorDemo-Source-v0.11.0
+          path: downloads/DeliverySimulatorDemo_Source_v0.11.0.zip
           retention-days: 30

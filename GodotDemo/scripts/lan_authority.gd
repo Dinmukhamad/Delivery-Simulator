@@ -9,6 +9,8 @@ const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const VehiclePlacement = preload("res://scripts/vehicle_placement.gd")
 const FragileRules = preload("res://scripts/fragile_rules.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
+const CityLayout = preload("res://scripts/city_layout.gd")
+const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const AVAILABLE_ORDER_COUNT: = 6
 const EXPRESS_REQUIRED_LEVEL: = 3
 const MAX_PROFILE_VALUE: = 1000000000
@@ -34,6 +36,7 @@ var next_order_id: int = 1
 
 var _world: Node3D
 var _balance: Dictionary = {}
+var _city_order_config: Dictionary = {}
 var _started_at_msec: int = 0
 var _deadline_msec: int = -1
 var _shift_seconds: float = -1.0
@@ -58,6 +61,7 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_world = world
 	_balance = balance.duplicate(true)
+	_city_order_config = CityOrderRules.load_config()
 	_vehicle_definitions = VehicleCatalog.load_definitions()
 	_team_config = TeamShiftRules.load_config()
 	_team_enabled = TeamShiftRules.normalize_mode(config.get("shift_mode", "competitive")) == "team"
@@ -997,7 +1001,7 @@ func _has_line_of_sight(from: Vector3, to: Vector3) -> bool:
 
 
 func _inside_bounds(position: Vector3) -> bool:
-	return absf(position.x) <= 84.0 and absf(position.z) <= 84.0 and position.y >= -1.0 and position.y <= 6.0
+	return CityLayout.contains_position(position) and position.y >= -1.0 and position.y <= 6.0
 
 
 func _finite_vector(value: Vector3) -> bool:
@@ -1012,49 +1016,29 @@ func _fill_orders(first: bool = false) -> void :
 	if not pickup_value is Array or not delivery_value is Array or pickup_value.is_empty() or delivery_value.is_empty():
 		return
 	while orders.size() < AVAILABLE_ORDER_COUNT:
-		orders.append(_make_order(first and orders.is_empty()))
+		var local_only: bool = CityOrderRules.local_order_count(orders, _city_order_config) < int(_city_order_config["minimum_local_orders"])
+		var order: Dictionary = _make_order(first and orders.is_empty(), local_only)
+		if order.is_empty():
+			break
+		orders.append(order)
 
 
-func _make_order(first: bool = false) -> Dictionary:
-	var pickups: Array = _world.get("pickup_points")
-	var destinations: Array = _world.get("delivery_points")
-	var pickup: Dictionary = pickups[0] if first else pickups.pick_random()
-	var options: Array[Dictionary] = []
-	for candidate: Dictionary in destinations:
-		var distance: float = pickup["position"].distance_to(candidate["position"])
-		if distance >= 8.0 and distance <= 120.0:
-			options.append(candidate)
-	if options.is_empty():
-		options.assign(destinations)
-	var destination: Dictionary = destinations[0] if first else options.pick_random()
-	var length: float = pickup["position"].distance_to(destination["position"])
-	var fragile: bool = not first and _fragile_unlocked() and randf() < clampf(_number(_balance.get("fragile_chance", 0.25), 0.25), 0.0, 1.0)
-	var express: bool = not first and not fragile and _express_unlocked() and randf() < 0.3
-	var minimum: int = maxi(0, int(_number(_balance.get("base_reward_min", 110), 110.0)))
-	var maximum: int = maxi(minimum, int(_number(_balance.get("base_reward_max", 160), 160.0)))
-	var base: int = randi_range(minimum, maximum) + int(round(length * _number(_balance.get("distance_reward", 3.5), 3.5)))
-	var multiplier: float = _number(_balance.get("fragile_multiplier", 1.3), 1.3) if fragile else (_number(_balance.get("express_multiplier", 1.5), 1.5) if express else 1.0)
-	var order: Dictionary = {
-		"id": next_order_id, "title": "%s → %s" % [pickup["name"], destination["name"]], 
-		"type": "fragile" if fragile else ("express" if express else "standard"), "type_name": "Хрупкий груз" if fragile else ("Экспресс" if express else "Стандарт"), 
-		"pickup_name": pickup["name"], "delivery_name": destination["name"], 
-		"pickup_position": pickup["position"], "delivery_position": destination["position"], 
-		"pickup_id": pickup["id"], "delivery_id": destination["id"], 
-		"distance": length, "base_reward": base, "reward": int(round(base * multiplier)), 
-		"required_level": FragileRules.required_level(_balance) if fragile else (EXPRESS_REQUIRED_LEVEL if express else 1), 
-		"xp": int(_number(_balance.get("fragile_xp", 75), 75.0)) if fragile else (int(_number(_balance.get("express_xp", 75), 75.0)) if express else int(_number(_balance.get("standard_xp", 50), 50.0))), 
-		"time_limit": maxf(45.0, length / 4.5 * 1.7 + 18.0), "state": "Available", "locked": false
-	}
-	if fragile:
-		order.merge(FragileRules.initial_fields(_balance))
-	next_order_id += 1
+func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
+	var couriers: Array = []
+	for value: Variant in records.values():
+		var record: Dictionary = value
+		if bool(record.get("connected", false)):
+			couriers.append({"profile": record["profile"], "position": record["position"]})
+	var order: Dictionary = CityOrderRules.make_order(next_order_id, _world.get("pickup_points"), _world.get("delivery_points"), _balance, couriers, _vehicle_definitions, _city_order_config, first, local_only)
+	if not order.is_empty():
+		next_order_id += 1
 	return order
 
 
 func _express_unlocked() -> bool:
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
-		if bool(record["connected"]) and int(record["profile"]["level"]) >= EXPRESS_REQUIRED_LEVEL:
+		if bool(record["connected"]) and int(record["profile"]["level"]) >= maxi(1, int(_number(_balance.get("express_required_level", EXPRESS_REQUIRED_LEVEL), float(EXPRESS_REQUIRED_LEVEL)))):
 			return true
 	return false
 
@@ -1070,7 +1054,7 @@ func _fragile_unlocked() -> bool:
 func _order_required_level(order: Dictionary) -> int:
 	match str(order.get("type", "standard")):
 		"express":
-			return EXPRESS_REQUIRED_LEVEL
+			return maxi(1, int(_number(_balance.get("express_required_level", EXPRESS_REQUIRED_LEVEL), float(EXPRESS_REQUIRED_LEVEL))))
 		"fragile":
 			return FragileRules.required_level(_balance)
 	return 1
