@@ -101,6 +101,8 @@ jobs:
                           process.wait()
                   for handle in handles.values():
                       handle.close()
+                  for role in handles:
+                      print("PEER_LOG " + role + "\\n" + (reports / ("lan-" + role + ".log")).read_text())
           PY
       - name: Install software rendering support
         shell: bash

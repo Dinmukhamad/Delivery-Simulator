@@ -46,6 +46,10 @@ func _run() -> void:
 	await process_frame
 	await physics_frame
 	app.lan_session.event_received.connect(func(event: Dictionary) -> void: print("LAN_EVENT: ", role, " ", event))
+	app.lan_session.request_received.connect(func(peer: int, action: String, _payload: Dictionary) -> void:
+		if peer != 1 and app.lan_authority.records.has(peer):
+			print("HOST_PEER_ACTION: ", action, " position=", app.lan_authority.records[peer].get("position"), " credit=", app.lan_authority.records[peer].get("move_credit"))
+	)
 	if role == "host":
 		await run_host()
 	else:
@@ -119,6 +123,7 @@ func run_client() -> void:
 		await process_frame
 	Input.action_release("move_forward")
 	await physics_frame
+	print("CLIENT_TIMING: now=", Time.get_ticks_msec(), " last_pose=", app._last_pose_msec, " processing=", app.is_processing(), " state=", app.state, " phase=", app.lan_session.phase)
 	print("LAN_INTERACT_DIAGNOSTIC: position=", app.player.global_position, " target=", pickup, " distance=", app.player.global_position.distance_to(pickup), " can=", app._can_interact(), " modal=", app.modal, " controls=", app.player.controls_enabled)
 	app._interact()
 	var picked: bool = await wait_for(func() -> bool: return app.active_order.get("state", "") == "PickedUp")
