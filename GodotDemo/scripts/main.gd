@@ -11,8 +11,9 @@ const VehiclePlacementScript = preload("res://scripts/vehicle_placement.gd")
 const FragileRules = preload("res://scripts/fragile_rules.gd")
 const SettingsService = preload("res://scripts/settings_service.gd")
 const AudioManagerScript = preload("res://scripts/audio_manager.gd")
+const NavigationService = preload("res://scripts/navigation_service.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.8.0"
+const DEMO_VERSION: = "0.9.0"
 
 var city
 var player
@@ -43,6 +44,7 @@ var _last_pose_msec: int = 0
 var _closing_lan: bool = false
 var _has_lan_started: bool = false
 var settings_service
+var navigation
 var audio_manager
 
 func _ready() -> void :
@@ -53,6 +55,8 @@ func _ready() -> void :
 	profile = _load_profile()
 	city = WorldScript.new()
 	add_child(city)
+	navigation = NavigationService.new()
+	navigation.configure(city.get_map_layout())
 	player = PlayerScript.new()
 	add_child(player)
 	player.reset_at(city.spawn_position)
@@ -60,6 +64,7 @@ func _ready() -> void :
 		player.set_view_direction(PI)
 	hud = HudScript.new()
 	add_child(hud)
+	hud.set_map_layout(city.get_map_layout())
 	hud.play_requested.connect(_play_solo)
 	hud.quit_requested.connect(_quit_game)
 	hud.resume_requested.connect(_resume)
@@ -217,6 +222,8 @@ func _begin_shift() -> void :
 	shift_remaining = float(balance.get("shift_seconds", 900))
 	_reset_shift_stats()
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	orders.clear()
 	player.set_carrying(false)
 	player.reset_at(city.spawn_position)
@@ -353,6 +360,8 @@ func _complete_delivery() -> void :
 
 	var completed: Dictionary = active_order.duplicate(true)
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	var money: int = int(completed["reward"])
 	var xp: int = int(completed["xp"])
 	if completed["type"] == "express":
@@ -392,6 +401,8 @@ func _abandon_order() -> void :
 	if active_order.is_empty():
 		return
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	player.set_carrying(false)
 	city.clear_objective()
 	hud.notify("Заказ отменен. За завершенные доставки прогресс сохранен.")
@@ -420,7 +431,13 @@ func _update_hud() -> void :
 		interaction = "E — открыть гараж"
 	elif _nearest_vehicle_owner() >= 0:
 		interaction = "F — сесть в свой транспорт" if _nearest_vehicle_owner() == _local_vehicle_owner() else "Этот транспорт принадлежит другому курьеру"
+	var route_key: String = "" if active_order.is_empty() else "%s:%s:%s" % [active_order.get("id", 0), active_order.get("state", ""), _target_position()]
+	var route_data: Dictionary = navigation.guidance(player.global_position, _target_position(), route_key, _active_vehicle_name())
+	if not active_order.is_empty():
+		distance = float(route_data.get("distance", 0.0))
+	var pose: Dictionary = player.get_network_pose()
 	hud.update_hud({
+		"navigation": route_data, "player_yaw": float(pose.get("yaw", 0.0)),
 		"money": int(profile["money"]), "xp": int(profile["xp"]), "level": int(profile["level"]), 
 		"rank": str(profile["rank"]), "shift_remaining": shift_remaining, 
 		"order_title": order_title, "order_status": status, "target_name": target_name, 
@@ -456,6 +473,7 @@ func _open_map() -> void :
 	modal = "map"
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
+	_update_hud()
 	hud.show_map(true, player.global_position, _target_position())
 
 func _close_modal() -> void :
@@ -495,6 +513,8 @@ func _end_shift() -> void :
 	shift_stats["time_used"] = float(balance.get("shift_seconds", 900)) - shift_remaining
 	_record_best_shift()
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	player.set_carrying(false)
 	city.clear_objective()
 	_set_gameplay_controls(false)
@@ -1033,6 +1053,8 @@ func _on_lan_lobby(data: Dictionary) -> void :
 	state = "lobby"
 	modal = ""
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	orders.clear()
 	_clear_vehicles()
 	city.clear_objective()
@@ -1054,6 +1076,8 @@ func _on_lan_started(data: Dictionary) -> void :
 	_snapshot_remaining = float(data.get("shift_seconds", 900))
 	shift_remaining = _snapshot_remaining
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	orders.clear()
 	_network_leaderboard.clear()
 	_reset_shift_stats()
@@ -1338,6 +1362,8 @@ func _return_to_main_menu() -> void :
 	_has_lan_started = false
 	_last_network_revision = -1
 	active_order.clear()
+	if navigation != null:
+		navigation.clear()
 	orders.clear()
 	_network_leaderboard.clear()
 	_clear_vehicles()

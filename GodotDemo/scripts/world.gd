@@ -15,6 +15,10 @@ var _objective: Node3D
 var _objective_ring: Node3D
 var _elapsed: float = 0.0
 var _built: bool = false
+var _map_roads: Array[Rect2] = []
+var _map_paths: Array[Rect2] = []
+var _map_obstacles: Array[Rect2] = []
+var _map_buildings: Array[Dictionary] = []
 
 const SIZE: float = 172.0
 const GRASS: = Color("9ac47a")
@@ -274,6 +278,7 @@ func _building(building_name: String, location: Vector3, dimensions: Vector3, co
 	building.name = building_name.validate_node_name()
 	building.position = location
 	add_child(building)
+	_map_buildings.append({"name": building_name, "rect": Rect2(Vector2(location.x - dimensions.x * 0.5, location.z - dimensions.z * 0.5), Vector2(dimensions.x, dimensions.z)), "color": color})
 	_rounded_box(building, Vector3(0, dimensions.y / 2.0, 0), dimensions, _material("wall_" + color.to_html(), color), 0.42, true)
 	var foundation: = _material("foundation", Color("d9cfb8"))
 	_rounded_box(building, Vector3(0, 0.3, 0), Vector3(dimensions.x + 0.35, 0.6, dimensions.z + 0.35), foundation, 0.18)
@@ -560,6 +565,13 @@ func _box(parent: Node3D, location: Vector3, dimensions: Vector3, material: Mate
 	instance.position = location
 	instance.material_override = material
 	parent.add_child(instance)
+	var footprint: Rect2 = _map_footprint(instance.global_transform, dimensions)
+	if material == _materials.get("road"):
+		_map_roads.append(footprint)
+	elif material == _materials.get("sidewalk") or material == _materials.get("park_path") or material == _materials.get("door_path") or material == _materials.get("forecourt"):
+		_map_paths.append(footprint)
+	if solid and dimensions.y > 1.0:
+		_map_obstacles.append(footprint)
 	if solid:
 		var body: = StaticBody3D.new()
 		body.collision_layer = 1
@@ -644,6 +656,7 @@ func _batch_static_geometry() -> void :
 
 
 func _static_box(location: Vector3, dimensions: Vector3) -> void :
+	_map_obstacles.append(_map_footprint(Transform3D(Basis.IDENTITY, location), dimensions))
 	var body: = StaticBody3D.new()
 	body.collision_layer = 1
 	body.collision_mask = 2
@@ -694,3 +707,26 @@ func _label(parent: Node3D, title: String, location: Vector3, pixel_size_value: 
 	label.shaded = false
 	parent.add_child(label)
 	return label
+
+
+func _map_footprint(transform_value: Transform3D, dimensions: Vector3) -> Rect2:
+	var half: Vector3 = dimensions * 0.5
+	var basis_value: Basis = transform_value.basis
+	var extent: Vector2 = Vector2(
+		absf(basis_value.x.x) * half.x + absf(basis_value.y.x) * half.y + absf(basis_value.z.x) * half.z,
+		absf(basis_value.x.z) * half.x + absf(basis_value.y.z) * half.y + absf(basis_value.z.z) * half.z)
+	var center: Vector2 = Vector2(transform_value.origin.x, transform_value.origin.z)
+	return Rect2(center - extent, extent * 2.0)
+
+func get_map_layout() -> Dictionary:
+	return {
+		"bounds": Rect2(Vector2(-SIZE * 0.5, -SIZE * 0.5), Vector2(SIZE, SIZE)),
+		"roads": _map_roads.duplicate(),
+		"paths": _map_paths.duplicate(),
+		"obstacles": _map_obstacles.duplicate(),
+		"buildings": _map_buildings.duplicate(true),
+		"pickups": pickup_points.duplicate(true),
+		"deliveries": delivery_points.duplicate(true),
+		"park": Rect2(48.0, -82.0, 34.0, 34.0),
+		"garage": Vector3(-66.0, 0.0, 23.0),
+	}

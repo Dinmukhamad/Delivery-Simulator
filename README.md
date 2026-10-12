@@ -1,13 +1,9 @@
 # Delivery Simulator
 
-Репозиторий для восстановления и дальнейшей разработки отдельной Godot-демоверсии Delivery Simulator.
+The editable standalone Godot demo is in `GodotDemo/` on the `develop` branch. Import `GodotDemo/project.godot` with Godot 4.6.3.
 
-Исходный проект пока не импортирован. Восстановление сборки и проверка полученных исходников ещё не выполнены.
+Version 0.9.0 adds a map matching the actual streets and buildings, local routing, route distances and direction hints. CI checks and target exports are in development; see [navigation documentation](docs/NAVIGATION.md) and [recovery evidence](RECOVERY.md).
 
-## Передача существующей сборки
+The old `recovery-v0.8.0` release contains the input binaries. The old tag's automatic source archives contain only its initial README; use `develop` for the recovered source.
 
-Добавьте `DeliverySimulatorDemo_Windows_v0.8.0.zip` как файл релиза через **Releases → Draft a new release**. Для начала восстановления достаточно Windows-сборки; при необходимости можно добавить и macOS-сборку.
-
-После получения сборки нужно извлечь Godot-проект, проверить сцены и GDScript, затем подключить навигацию по улицам и проходам к мини-карте и большой карте.
-
-Этот репозиторий пока не содержит готовой версии игры 1.0.
+This Godot demo is separate from the Unity project specified in the original design. Native Windows/macOS testing, physical cross-platform LAN and FPS measurements remain acceptance tasks.

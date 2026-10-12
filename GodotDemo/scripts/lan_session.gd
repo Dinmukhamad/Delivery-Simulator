@@ -13,7 +13,7 @@ signal disconnected(reason: String)
 signal message_received(message: String)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
-const GAME_VERSION: String = "0.8.0"
+const GAME_VERSION: String = "0.9.0"
 const PORT: int = 7777
 const SERVER_ID: int = 1
 const CONNECT_TIMEOUT_MS: int = 8000
