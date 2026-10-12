@@ -1,47 +1,48 @@
-# Delivery Simulator Demo 0.9.0 build report
+# Проверка демоверсии 0.10.0
 
-Code commit: 18e2f0805a19f4273cc9a8894474d5ddc30f96cc.
-Successful CI: https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933.
-Engine: Godot 4.6.3; restored base: 0.8.0.
+Командный режим, передача посылок и исправленная панель результатов проверяются сборкой [GitHub Actions 38297836122](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122) на игровом коммите `ee1d181fe1d591a7dc3a69ad1bc5a00b0598a141`. Сборка завершилась успешно.
 
-## Delivered behaviour
+В стандартном окне 1280×720 все кнопки результатов видны без прокрутки. При уменьшении окна панели используют прокрутку.
 
-Both maps use actual city geometry instead of the former generic four-street grid. Delivery guidance follows streets/paths around solid buildings, provides remaining route length and meaningful turn hints, updates on confirmed pickup, and replans after deviation or vehicle changes. Walking/bicycle shortcuts differ from motor road routes; final walking access is dashed gold. Goal colour and local orientation are visible.
+## Подтверждённые результаты
 
-LAN coordinate RPCs now use ordered reliable delivery. A genuine two-process test exposed stale Host positions that blocked pickup with unreliable ordered packets. Sender/session validation, collision/finite checks, movement credit, order ownership and rewards remain on the Host.
+- Godot 4.6.3 импортирует проект без ошибок скриптов.
+- 34 проверки навигации/Solo и 113 проверок командных правил выполняются на исходниках и на точных экспортированных Windows/macOS PCK.
+- 21 проверка существующей LAN-навигации и 36 проверок командной смены выполняются в двух отдельных ENet-процессах.
+- Это 498 проверок состояния, дополнительно к рендерам интерфейса.
+- Клиент действительно перемещается и взаимодействует с полученной от Host посылкой; передача, завершение и бонус подтверждаются сервером.
+- Реальная JSON-запись профиля проверяется в отдельных временных XDG-папках Host/Client. Требуются явные `--isolated-save` и `DELIVERY_TEAM_TEST_SAVE=1`; обычный test-mode не записывает личный профиль.
+- Проверяются точный токен предложения, владелец, свободный получатель, состояние/дальность/видимость, срок, повторные запросы, сохранение качества и срока, отключение и однократный бонус.
+- Карта отрисовывается при 1280×720 и 960×540; командный HUD, Tab и результаты — с данными проверки. При обновлении таймера сохраняются кнопки согласия и фокус.
+- Подтверждаются Windows PE x86_64, macOS Universal Mach-O Intel + Apple Silicon, контрольные суммы шаблонов и CRC ZIP.
 
-## Verification performed
+## Пределы проверки
 
-- Source editor import passed.
-- 34 navigation/Solo checks passed against source.
-- The same 34 checks passed against the exact Windows embedded PCK.
-- The same 34 checks passed against the exact macOS PCK.
-- ENet loopback in two separate processes: Host 10 checks, Client 11 checks, all passed; confirmed acceptance/pickup, separate personal routes, peer marker and client disconnect.
-- Full map rendered and inspected at 1280x720 and 960x540 using software OpenGL.
-- Windows PE architecture checked: x86_64.
-- macOS fat Mach-O checked: Intel x86_64 and Apple Silicon arm64.
-- Release ZIP CRC checks passed.
-- All ten recovered audio files exactly matched their original manifest SHA256 values.
+На CI используется Linux-редактор Godot и программный OpenGL. Проверка экспортированного PCK подтверждает код и ресурсы, но не является нативным запуском EXE или приложения macOS. Снимки показывают реальный интерфейс и город с подготовленными данными проверки.
 
-## Downloads
+Ручной приёмки требуют запуск на Windows/macOS, совместный LAN на 3–4 физических устройствах, производительность и слышимость звуков на устройствах. macOS-сборка не нотарифицирована. Это отдельная Godot-демоверсия, не завершённая Unity-версия 1.0.
 
-GitHub build artifacts:
+[Правила, полный код, настройка и сценарий приёмки](TEAM_SHIFT.md) · [Навигация](NAVIGATION.md)
 
-- Windows: https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11762136467 — 38,822,063 bytes.
-- macOS: https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11761887835 — 65,309,361 bytes.
+## Архивы
 
-These are the GitHub artifact ZIP wrappers. Unpack the downloaded ZIP, then unpack the game ZIP inside it. macOS executable permissions are preserved by the inner ZIP.
+Архивы GitHub Actions содержат ZIP игры или исходников. Сначала распакуйте скачанный архив, затем ZIP внутри. Приведённые SHA256 относятся к внешним архивам артефактов.
 
-GitHub artifact SHA256:
-- Windows: 0b8ad6870d43494eafbda53a9a9e3410d65709fd440139f525d9bcb6a36f4872.
-- macOS: 2a2490e413046ff99c5652212b3792f52be1890f86ff3eceeb42db80101389a2.
-- Source: 07f5fe997871bb126207335bab1f4d2ef083357f1bf74cd56804743ca120af7a.
+| Артефакт | Размер, байт | SHA256 |
+|---|---:|---|
+| [DeliverySimulatorDemo-Source-v0.10.0](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11769955426) | 2766296 | `e5f7659f6bc9f67bec5e3dce4f66c4b1d8cc4b0af564c88e0c6ded61f57176fc` |
+| [DeliverySimulatorDemo-Windows-v0.10.0](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11768749891) | 38841350 | `cdd8579b6d1c9f693044d372d29fb47ffb9383d3a25e6568157d4569686b1fac` |
+| [DeliverySimulatorDemo-macOS-v0.10.0](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11768744775) | 65329555 | `917a209deb1ee06b52d5e7dc832589e48234e2d0ca859a56805a86a8fd133450` |
+| [build-reports](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11768389962) | 795170 | `e7f557b8b2e79a55b4c88f24d572c8715580aed5abfe658b80891ea346174488` |
 
-Source artifact: https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11761857966.
-Reports and images: https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11762101426.
+Исходный архив CI содержит документацию на момент игрового коммита. Актуальный отчёт и изображения находятся в текущей ветке репозитория.
 
-## Practical limits
+## Снимки интерфейса
 
-Target packs were executed through the Linux Godot engine. Native Windows/macOS launch, physical Windows Host + Windows Client + macOS Client, four-device LAN, actual speaker output and FPS measurements remain manual acceptance tasks. This is the separately authorised Godot demo, not completion of the Unity 1.0 specification. macOS notarization for internet distribution is not performed.
+Кадры сделаны Godot из игрового коммита с подготовленными данными проверки.
 
-Full change and setup instructions: NAVIGATION.md.
+![Общий план и предложение посылки](screenshots/team-game-1280.png)
+
+![Согласие на передачу при 960×540](screenshots/team-orders-960.png)
+
+![Командные результаты](screenshots/team-results-1280.png)
