@@ -117,6 +117,27 @@ jobs:
           print(json.dumps(text_files, ensure_ascii=True))
           print("RECOVERED_TEXT_FILES_END")
           PY
+      - name: Export recovered binary resources for source preservation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, pathlib
+          text_suffixes = [".gd", ".tscn", ".tres", ".godot", ".json", ".cfg", ".md", ".txt", ".svg", ".py"]
+          for p in sorted(pathlib.Path("GodotDemo").rglob("*")):
+              if not p.is_file():
+                  continue
+              if p.suffix.lower() in text_suffixes:
+                  try:
+                      p.read_text(encoding="utf-8")
+                      continue
+                  except UnicodeDecodeError:
+                      pass
+              raw = p.read_bytes()
+              data = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
+              chunks = [data[i:i+60000] for i in range(0, len(data), 60000)]
+              for i, chunk in enumerate(chunks):
+                  print("RECOVERY_BINARY " + json.dumps({"path": str(p.relative_to("GodotDemo")), "part": i, "parts": len(chunks), "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "data": chunk}))
+          PY
       - name: Check recovered project with Godot 4.6.3
         shell: bash
         run: |
