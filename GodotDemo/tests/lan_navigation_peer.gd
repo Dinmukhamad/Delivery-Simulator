@@ -7,6 +7,7 @@ var checks: int = 0
 var failures: Array[String] = []
 
 func _initialize() -> void:
+	Engine.max_fps = 60
 	call_deferred("_run")
 
 func check(value: bool, message: String) -> void:
