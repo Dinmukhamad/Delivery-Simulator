@@ -278,7 +278,7 @@ func _rpc_action(request_session: String, action: String, payload: Dictionary) -
 	request_received.emit(sender, action, payload)
 
 
-@rpc("any_peer", "call_remote", "unreliable_ordered", 1)
+@rpc("any_peer", "call_remote", "reliable", 0)
 func _rpc_pose_request(request_session: String, pose: Dictionary) -> void :
 	var sender: int = multiplayer.get_remote_sender_id()
 	if not _approved_request(sender) or phase != "playing" or request_session != session_id:
@@ -328,7 +328,7 @@ func _rpc_event(data: Dictionary) -> void :
 	event_received.emit(data)
 
 
-@rpc("authority", "call_remote", "unreliable_ordered", 1)
+@rpc("authority", "call_remote", "reliable", 0)
 func _rpc_published_pose(pose_session: String, peer_id: int, pose: Dictionary) -> void :
 	if not _from_host() or phase != "playing" or pose_session != session_id or peer_id == local_id or not members.has(peer_id):
 		return
