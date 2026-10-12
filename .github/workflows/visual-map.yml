@@ -1,0 +1,86 @@
+name: Render navigation map previews
+
+on:
+  push:
+    branches: [develop]
+    paths: [GodotDemo/tests/navigation_visual.gd, .github/workflows/visual-map.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-map-preview
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install verified Godot 4.6.3
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          target = pathlib.Path(os.environ["RUNNER_TEMP"]) / "godot"
+          target.mkdir(exist_ok=True)
+          archive = target / "editor.zip"
+          urllib.request.urlretrieve("https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip", archive)
+          with open(archive, "rb") as stream:
+              actual = hashlib.file_digest(stream, "sha256").hexdigest()
+          if actual != "d0bc2113065e481c9c2c2b2c37daa4e8be3fe9e27f0ab9ab0b6096e9a37907f3":
+              raise SystemExit("Editor SHA256 mismatch")
+          with zipfile.ZipFile(archive) as z:
+              z.extractall(target)
+          editor = next(target.glob("Godot_*x86_64"))
+          editor.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write("GODOT_BINARY=" + str(editor) + "\n")
+          PY
+      - name: Import and validate GDScript
+        shell: bash
+        run: |
+          mkdir -p build-reports
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--editor", "--path", "GodotDemo", "--quit"], capture_output=True, text=True, timeout=180)
+          output = result.stdout + result.stderr
+          pathlib.Path("build-reports/editor-import.log").write_text(output)
+          print(output)
+          if result.returncode or any(s in output for s in ["SCRIPT ERROR:", "Parse Error:", "Failed to load script", "Failed loading resource"]):
+              raise SystemExit("Editor import failed")
+          PY
+      - name: Install software rendering support
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libgl1-mesa-dri
+      - name: Render both map layouts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          for width in [1280, 960]:
+              capture = str((reports / ("navigation-" + str(width) + ".png")).resolve())
+              cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", editor, "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/navigation_visual.gd", "--", "--test-mode", "--width=" + str(width), "--capture=" + capture]
+              env = os.environ.copy()
+              env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              log = result.stdout + result.stderr
+              (reports / ("visual-" + str(width) + ".log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_VISUAL:" not in log:
+                  raise SystemExit("Map render check failed")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: navigation-map-previews
+          path: build-reports
+          retention-days: 14

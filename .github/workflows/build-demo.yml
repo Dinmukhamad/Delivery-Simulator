@@ -1,0 +1,266 @@
+name: Validate and build Delivery Simulator
+
+on:
+  push:
+    branches: [develop]
+    paths: [GodotDemo/**, .github/workflows/build-demo.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-demo-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install verified Godot 4.6.3
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          target = pathlib.Path(os.environ["RUNNER_TEMP"]) / "godot"
+          target.mkdir(exist_ok=True)
+          archive = target / "editor.zip"
+          urllib.request.urlretrieve("https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip", archive)
+          with open(archive, "rb") as stream:
+              actual = hashlib.file_digest(stream, "sha256").hexdigest()
+          if actual != "d0bc2113065e481c9c2c2b2c37daa4e8be3fe9e27f0ab9ab0b6096e9a37907f3":
+              raise SystemExit("Editor SHA256 mismatch")
+          with zipfile.ZipFile(archive) as z:
+              z.extractall(target)
+          editor = next(target.glob("Godot_*x86_64"))
+          editor.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write("GODOT_BINARY=" + str(editor) + "\n")
+          PY
+      - name: Import and validate GDScript
+        shell: bash
+        run: |
+          mkdir -p build-reports
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--editor", "--path", "GodotDemo", "--quit"], capture_output=True, text=True, timeout=180)
+          output = result.stdout + result.stderr
+          pathlib.Path("build-reports/editor-import.log").write_text(output)
+          print(output)
+          if result.returncode or any(s in output for s in ["SCRIPT ERROR:", "Parse Error:", "Failed to load script", "Failed loading resource"]):
+              raise SystemExit("Editor import failed")
+          PY
+      - name: Run navigation and Solo regression checks
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          result = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--path", "GodotDemo", "--script", "tests/navigation_routes.gd", "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+          output = result.stdout + result.stderr
+          pathlib.Path("build-reports/navigation-tests.log").write_text(output)
+          print(output)
+          if result.returncode or "SCRIPT ERROR:" in output or "NAVIGATION_TESTS:" not in output:
+              raise SystemExit("Navigation checks failed")
+          PY
+      - name: Verify two-process LAN navigation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tempfile, time
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          with tempfile.TemporaryDirectory() as coord:
+              handles = {}
+              processes = {}
+              try:
+                  for role in ["host", "client"]:
+                      if role == "client":
+                          deadline = time.monotonic() + 20
+                          while not pathlib.Path(coord, "host-ready").exists():
+                              if time.monotonic() > deadline or processes["host"].poll() is not None:
+                                  raise RuntimeError("Host did not open lobby")
+                              time.sleep(0.05)
+                      handles[role] = open(reports / ("lan-" + role + ".log"), "w")
+                      cmd = [editor, "--headless", "--path", "GodotDemo", "--script", "tests/lan_navigation_peer.gd", "--", "--test-mode", "--role=" + role, "--coord=" + coord]
+                      processes[role] = subprocess.Popen(cmd, stdout=handles[role], stderr=subprocess.STDOUT)
+                  for role in ["client", "host"]:
+                      result = processes[role].wait(timeout=45)
+                      handles[role].flush()
+                      log = (reports / ("lan-" + role + ".log")).read_text()
+                      print(log)
+                      if result or "SCRIPT ERROR:" in log or "LAN_NAVIGATION_" not in log:
+                          raise RuntimeError("LAN checks failed: " + role)
+              finally:
+                  for process in processes.values():
+                      if process.poll() is None:
+                          process.kill()
+                          process.wait()
+                  for handle in handles.values():
+                      handle.close()
+                  for role in handles:
+                      print("PEER_LOG " + role + "\\n" + (reports / ("lan-" + role + ".log")).read_text())
+          PY
+      - name: Install software rendering support
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libgl1-mesa-dri
+      - name: Render both map layouts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          for width in [1280, 960]:
+              capture = str((reports / ("navigation-" + str(width) + ".png")).resolve())
+              cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", editor, "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/navigation_visual.gd", "--", "--test-mode", "--width=" + str(width), "--capture=" + capture]
+              env = os.environ.copy()
+              env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              log = result.stdout + result.stderr
+              (reports / ("visual-" + str(width) + ".log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_VISUAL:" not in log:
+                  raise SystemExit("Map render check failed")
+          PY
+      - name: Install only required Windows and macOS templates
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil, urllib.request, zipfile
+          archive = pathlib.Path(os.environ["RUNNER_TEMP"]) / "templates.tpz"
+          urllib.request.urlretrieve("https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_export_templates.tpz", archive)
+          with open(archive, "rb") as stream:
+              actual = hashlib.file_digest(stream, "sha256").hexdigest()
+          if actual != "3fbe2c0e2dec9d537ab9ec97bcf8da91dcf23357fc51f67092dd068d839290a8":
+              raise SystemExit("Templates SHA256 mismatch")
+          dest = pathlib.Path.home() / ".local/share/godot/export_templates/4.6.3.stable"
+          dest.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as z:
+              for member in z.namelist():
+                  name = pathlib.PurePosixPath(member).name
+                  if name == "macos.zip" or name == "version.txt" or "windows_release_x86_64" in name:
+                      with z.open(member) as source, open(dest / name, "wb") as output:
+                          shutil.copyfileobj(source, output)
+                      print("Installed:", name)
+          archive.unlink()
+          PY
+      - name: Export and check exact target packs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, struct, subprocess, zipfile
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          for name, output in [("Windows Desktop", "builds/Windows/DeliverySimulatorDemo.exe"), ("macOS", "builds/macOS/Delivery Simulator.zip")]:
+              pathlib.Path(output).parent.mkdir(parents=True, exist_ok=True)
+              result = subprocess.run([editor, "--headless", "--path", "GodotDemo", "--export-release", name, str(pathlib.Path(output).resolve())], capture_output=True, text=True, timeout=300)
+              log = result.stdout + result.stderr
+              (reports / (name.replace(" ", "-") + "-export.log")).write_text(log)
+              print(log)
+              if result.returncode or not pathlib.Path(output).is_file():
+                  raise SystemExit("Export failed: " + name)
+          exe = pathlib.Path("builds/Windows/DeliverySimulatorDemo.exe")
+          with exe.open("rb") as stream:
+              stream.seek(0x3c)
+              offset = struct.unpack("<I", stream.read(4))[0]
+              stream.seek(offset)
+              if stream.read(4) != b"PE\x00\x00" or struct.unpack("<H", stream.read(2))[0] != 0x8664:
+                  raise SystemExit("Windows build is not x86_64")
+          macdir = pathlib.Path("builds/macOS/unpacked")
+          with zipfile.ZipFile("builds/macOS/Delivery Simulator.zip") as z:
+              z.extractall(macdir)
+          pck = next(macdir.rglob("*.pck"))
+          app = next(macdir.glob("*.app"))
+          binary = next((app / "Contents/MacOS").iterdir())
+          with binary.open("rb") as stream:
+              magic, count = struct.unpack(">II", stream.read(8))
+              if magic not in [0xcafebabe, 0xcafebabf]:
+                  raise SystemExit("macOS build is not Universal")
+              entry_size = 20 if magic == 0xcafebabe else 32
+              cpus = set()
+              for _ in range(count):
+                  entry = stream.read(entry_size)
+                  cpus.add(struct.unpack(">I", entry[:4])[0])
+              if not {0x01000007, 0x0100000c}.issubset(cpus):
+                  raise SystemExit("macOS Universal lacks Intel or Apple Silicon")
+          script = str(pathlib.Path("GodotDemo/tests/navigation_routes.gd").resolve())
+          for tag, pack in [("windows", exe), ("macos", pck)]:
+              result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
+              log = result.stdout + result.stderr
+              (reports / (tag + "-packed-tests.log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_TESTS:" not in log:
+                  raise SystemExit("Packed checks failed: " + tag)
+          PY
+      - name: Package downloadable game and source archives
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, zipfile
+          dest = pathlib.Path("downloads")
+          dest.mkdir(exist_ok=True)
+          guide = """Delivery Simulator Demo 0.9.0
+          Windows: unpack the archive and start DeliverySimulatorDemo.exe.
+          macOS: unpack the archive and open Delivery Simulator.app.
+          Controls: WASD, Mouse, Shift, Space, E, F, M (map), Tab, Esc.
+          LAN: Host Game on one computer; Join Game with the Host IPv4 address on the other. UDP port 7777, matching game versions, same local network.
+          Map: streets and buildings match the actual city; teal route, gold pickup, teal delivery, gold dashed final walking access.
+          Native OS launch, physical Windows/macOS LAN and FPS require acceptance testing.
+          Godot 4.6.3: MIT license, https://godotengine.org/license/
+          Original generated audio: CC0 1.0, https://creativecommons.org/publicdomain/zero/1.0/
+          """
+          (pathlib.Path("builds/Windows") / "README.txt").write_text(guide)
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.9.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+              for p in pathlib.Path("builds/Windows").rglob("*"):
+                  if p.is_file():
+                      z.write(p, "DeliverySimulatorDemo_Windows_v0.9.0/" + str(p.relative_to("builds/Windows")))
+          maczip = dest / "DeliverySimulatorDemo_macOS_v0.9.0.zip"
+          shutil.copy2("builds/macOS/Delivery Simulator.zip", maczip)
+          with zipfile.ZipFile(maczip, "a", zipfile.ZIP_DEFLATED) as z:
+              z.writestr("README.txt", guide)
+          with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Source_v0.9.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+              for p in pathlib.Path("GodotDemo").rglob("*"):
+                  if p.is_file() and not any(part in [".godot", ".git", ".autoconverted", ".gdre"] for part in p.parts):
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.9.0/" + str(p.relative_to("GodotDemo")))
+              for p in pathlib.Path("docs").rglob("*"):
+                  if p.is_file():
+                      z.write(p, "DeliverySimulatorDemo_Source_v0.9.0/docs/" + str(p.relative_to("docs")))
+          hashes = []
+          for p in sorted(dest.glob("*.zip")):
+              with zipfile.ZipFile(p) as z:
+                  if z.testzip() is not None:
+                      raise SystemExit("ZIP CRC check failed: " + p.name)
+              digest = hashlib.sha256(p.read_bytes()).hexdigest()
+              hashes.append(digest + "  " + p.name)
+          (dest / "SHA256SUMS.txt").write_text("\n".join(hashes) + "\n")
+          report = {"version": "0.9.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
+          pathlib.Path("build-reports/build.json").write_text(json.dumps(report, indent=2) + "\n")
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-reports
+          path: build-reports
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeliverySimulatorDemo-Windows-v0.9.0
+          path: downloads/DeliverySimulatorDemo_Windows_v0.9.0.zip
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeliverySimulatorDemo-macOS-v0.9.0
+          path: downloads/DeliverySimulatorDemo_macOS_v0.9.0.zip
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeliverySimulatorDemo-Source-v0.9.0
+          path: downloads/DeliverySimulatorDemo_Source_v0.9.0.zip
+          retention-days: 30

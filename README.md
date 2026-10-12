@@ -1,13 +1,17 @@
 # Delivery Simulator
 
-Репозиторий для восстановления и дальнейшей разработки отдельной Godot-демоверсии Delivery Simulator.
+Editable Godot demo **0.9.0**, restored from the verified 0.8.0 build. Open `GodotDemo/project.godot` with Godot 4.6.3.
 
-Исходный проект пока не импортирован. Восстановление сборки и проверка полученных исходников ещё не выполнены.
+The city map now matches the actual streets and buildings. Mini-map and M-map show the same route, turn arrows, player heading, route distance and confirmed pickup/delivery goal. Routes avoid solid buildings; walking/bicycle use paths, motor transport follows roads with a dashed final walking approach.
 
-## Передача существующей сборки
+[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11762136467) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11761887835)
 
-Добавьте `DeliverySimulatorDemo_Windows_v0.8.0.zip` как файл релиза через **Releases → Draft a new release**. Для начала восстановления достаточно Windows-сборки; при необходимости можно добавить и macOS-сборку.
+Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
 
-После получения сборки нужно извлечь Godot-проект, проверить сцены и GDScript, затем подключить навигацию по улицам и проходам к мини-карте и большой карте.
+[Build evidence and limits](docs/BUILD_REPORT.md) · [Full navigation source/setup](docs/NAVIGATION.md) · [Recovery history](RECOVERY.md)
 
-Этот репозиторий пока не содержит готовой версии игры 1.0.
+LAN: Host Game on one computer; Join Game with the Host's IPv4 address on the other. Use the same game version and local network; UDP port 7777. Ready → Start Game. Coordinates and orders are confirmed by the Host. Profile progress remains local.
+
+CI passed 34 checks on source and on both exact target packs, 21 checks in two ENet processes, and map renders at 1280x720/960x540. Native OS launch, physical mixed-platform/four-device LAN and FPS still require acceptance testing.
+
+This is the standalone Godot demo, separate from the Unity project in the original specification. The old recovery tag's automatically generated source ZIP contains its initial README; use the current source branches for the full editable project.

@@ -1,0 +1,51 @@
+{
+  "bicycle": {
+    "id": "bicycle",
+    "name": "Bicycle",
+    "price": 1500,
+    "required_level": 2,
+    "max_speed": 13.0,
+    "reverse_speed": 3.0,
+    "acceleration": 8.0,
+    "braking": 12.0,
+    "steer_rate": 2.2,
+    "collision_width": 0.8,
+    "collision_height": 1.65,
+    "collision_length": 2.2,
+    "camera_distance": 6.0,
+    "camera_height": 1.7
+  },
+  "scooter": {
+    "id": "scooter",
+    "name": "Scooter",
+    "price": 5000,
+    "required_level": 4,
+    "max_speed": 17.0,
+    "reverse_speed": 3.0,
+    "acceleration": 10.0,
+    "braking": 12.0,
+    "steer_rate": 2.0,
+    "collision_width": 0.95,
+    "collision_height": 1.75,
+    "collision_length": 2.45,
+    "camera_distance": 6.5,
+    "camera_height": 1.9
+  },
+  "car": {
+    "id": "car",
+    "name": "Car",
+    "price": 15000,
+    "required_level": 6,
+    "max_speed": 23.0,
+    "reverse_speed": 5.0,
+    "acceleration": 8.0,
+    "braking": 14.0,
+    "steer_rate": 1.35,
+    "handbrake": 28.0,
+    "collision_width": 2.0,
+    "collision_height": 1.55,
+    "collision_length": 4.0,
+    "camera_distance": 7.5,
+    "camera_height": 1.7
+  }
+}

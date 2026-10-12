@@ -1,0 +1,21 @@
+{
+  "shift_seconds": 900,
+  "available_orders": 6,
+  "interaction_distance": 3.2,
+  "standard_xp": 50,
+  "express_xp": 75,
+  "base_reward_min": 110,
+  "base_reward_max": 160,
+  "distance_reward": 3.5,
+  "express_multiplier": 1.5,
+  "express_required_level": 3,
+  "fragile_xp": 75,
+  "fragile_multiplier": 1.3,
+  "fragile_required_level": 5,
+  "fragile_quality_bonus": 100,
+  "fragile_impact_threshold": 4.0,
+  "fragile_impact_cooldown_msec": 1000,
+  "fragile_damage_per_mps": 4.0,
+  "fragile_chance": 0.25,
+  "level_xp_step": 150
+}
