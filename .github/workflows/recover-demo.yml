@@ -1,0 +1,144 @@
+name: Recover Godot demo 0.8.0
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/recover-demo.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: recover-godot-demo
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download and verify recovery inputs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "demo-recovery"
+          root.mkdir(exist_ok=True)
+          inputs = [
+              ("windows.zip", "https://github.com/Dinmukhamad/Delivery-Simulator/releases/download/recovery-v0.8.0/DeliverySimulatorDemo_Windows_v0.8.0.zip", "33981e90cab88d2b3406f70f51377d5fe9986d6806f3a742786216c778b59243", "game"),
+              ("gdre.zip", "https://github.com/GDRETools/gdsdecomp/releases/download/v2.7.4/GDRE_tools-v2.7.4-linux.zip", "3dc4f1244dda62e41e0c952ac00a69e60e07f3b0d5a211164806bf9d41a54758", "tool"),
+              ("godot.zip", "https://github.com/godotengine/godot-builds/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip", "d0bc2113065e481c9c2c2b2c37daa4e8be3fe9e27f0ab9ab0b6096e9a37907f3", "editor"),
+          ]
+          for name, url, expected, destination in inputs:
+              archive = root / name
+              urllib.request.urlretrieve(url, archive)
+              actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit("SHA256 mismatch: " + name)
+              target = root / destination
+              target.mkdir(exist_ok=True)
+              with zipfile.ZipFile(archive) as z:
+                  for item in z.infolist():
+                      parts = pathlib.PurePosixPath(item.filename).parts
+                      if pathlib.PurePosixPath(item.filename).is_absolute() or ".." in parts:
+                          raise SystemExit("Unsafe ZIP member")
+                      if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                          raise SystemExit("ZIP symlink rejected")
+                  z.extractall(target)
+              print("Verified and extracted:", name)
+          exes = [p for p in (root / "game").rglob("*.exe") if not p.name.endswith(".console.exe")]
+          if not exes:
+              raise SystemExit("No game EXE found")
+          game = max(exes, key=lambda p: p.stat().st_size)
+          tools = [p for p in (root / "tool").rglob("*") if p.is_file() and "gdre" in p.name.lower() and not p.suffix == ".pck"]
+          editors = [p for p in (root / "editor").rglob("*") if p.is_file() and p.name.startswith("Godot_") and p.name.endswith("x86_64")]
+          if not tools or not editors:
+              raise SystemExit("Recovery/editor executable not found")
+          tool = max(tools, key=lambda p: p.stat().st_size)
+          editor = max(editors, key=lambda p: p.stat().st_size)
+          tool.chmod(0o755)
+          editor.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("GAME_EXE=" + str(game) + "\n")
+              f.write("GDRE_BINARY=" + str(tool) + "\n")
+              f.write("GODOT_BINARY=" + str(editor) + "\n")
+              f.write("RECOVERY_ROOT=" + str(root) + "\n")
+          PY
+      - name: Recover project from embedded PCK
+        id: recover
+        continue-on-error: true
+        shell: bash
+        run: |
+          "$GDRE_BINARY" --headless --recover="$GAME_EXE" --output="$RECOVERY_ROOT/project"
+      - name: Preserve recovered source as an artifact
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, shutil
+          root = pathlib.Path(os.environ["RECOVERY_ROOT"])
+          source = root / "project"
+          if not (source / "project.godot").is_file():
+              raise SystemExit("Recovery did not produce project.godot")
+          scripts = list(source.rglob("*.gd"))
+          if not scripts:
+              raise SystemExit("Recovery did not produce editable GDScript")
+          target = pathlib.Path("GodotDemo")
+          if target.exists():
+              raise SystemExit("Refusing to replace an existing GodotDemo directory")
+          shutil.copytree(source, target, ignore=shutil.ignore_patterns(".git", ".godot", ".gdre"))
+          for p in target.rglob("*"):
+              if p.is_file() and p.stat().st_size > 25 * 1024 * 1024:
+                  raise SystemExit("Unexpected large recovered file: " + str(p))
+          docs = pathlib.Path("ReleaseDocumentation")
+          for p in (root / "game").rglob("*"):
+              if p.is_file() and p.suffix.lower() in [".md", ".txt"]:
+                  dest = docs / p.relative_to(root / "game")
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(p, dest)
+          report = {
+              "source_release": "recovery-v0.8.0",
+              "source_sha256": "33981e90cab88d2b3406f70f51377d5fe9986d6806f3a742786216c778b59243",
+              "recovery_tool": "GDRETools 2.7.4",
+              "godot_version": "4.6.3",
+              "recovered_gd_scripts": len(scripts),
+              "verification": "Editor import and runtime tests pending; original Git history and excluded export files are not recovered.",
+          }
+          pathlib.Path("RecoveryReports").mkdir(exist_ok=True)
+          pathlib.Path("RecoveryReports/recovery.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("Recovered editable scripts:", len(scripts))
+          text_files = {}
+          for p in sorted(target.rglob("*")):
+              if p.is_file() and p.suffix.lower() in [".gd", ".tscn", ".tres", ".godot", ".json", ".cfg", ".md", ".txt", ".svg", ".py"] and p.stat().st_size < 500000:
+                  try:
+                      text_files[str(p.relative_to(target))] = p.read_text(encoding="utf-8")
+                  except UnicodeDecodeError:
+                      pass
+          print("RECOVERED_TEXT_FILES_BEGIN")
+          print(json.dumps(text_files, ensure_ascii=True))
+          print("RECOVERED_TEXT_FILES_END")
+          PY
+      - name: Check recovered project with Godot 4.6.3
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          run = subprocess.run([os.environ["GODOT_BINARY"], "--headless", "--editor", "--path", "GodotDemo", "--quit"], capture_output=True, text=True, timeout=180)
+          output = run.stdout + run.stderr
+          pathlib.Path("RecoveryReports/editor-import.log").write_text(output, encoding="utf-8")
+          print(output)
+          errors = ["SCRIPT ERROR:", "Parse Error:", "Failed to load script", "Failed loading resource"]
+          if run.returncode or any(marker in output for marker in errors):
+              raise SystemExit("Recovered project requires fixes; inspect editor-import.log")
+          print("Recovered project editor import completed without script errors.")
+          PY
+      - name: Save recovery artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-godot-demo-v0.8.0
+          include-hidden-files: true
+          path: |
+            GodotDemo
+            RecoveryReports
+            ReleaseDocumentation
+          retention-days: 14
