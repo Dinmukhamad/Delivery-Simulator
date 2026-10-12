@@ -113,6 +113,9 @@ func run_client() -> void:
 	check(not app.hud._mini_map.route_points.is_empty(), "Confirmed client order has a route")
 	check(app.hud._mini_map.route_points == app.hud._full_map.route_points, "Client maps have identical paths")
 	var pickup: Vector3 = app._target_position()
+	var movement_started: int = Time.get_ticks_msec()
+	var movement_frames: int = 0
+	Engine.max_fps = 60
 	var deadline: int = Time.get_ticks_msec() + 12_000
 	while Time.get_ticks_msec() < deadline:
 		var direction: Vector3 = pickup - app.player.global_position
@@ -122,8 +125,11 @@ func run_client() -> void:
 		app.player.set_view_direction(atan2(-direction.x, -direction.z))
 		Input.action_press("move_forward")
 		await process_frame
+		OS.delay_msec(17)
+		movement_frames += 1
 	Input.action_release("move_forward")
 	await physics_frame
+	print("CLIENT_MOVEMENT_TIMING: elapsed=", Time.get_ticks_msec() - movement_started, " frames=", movement_frames, " max_fps=", Engine.max_fps)
 	print("CLIENT_TIMING: now=", Time.get_ticks_msec(), " last_pose=", app._last_pose_msec, " processing=", app.is_processing(), " state=", app.state, " phase=", app.lan_session.phase)
 	print("LAN_INTERACT_DIAGNOSTIC: position=", app.player.global_position, " target=", pickup, " distance=", app.player.global_position.distance_to(pickup), " can=", app._can_interact(), " modal=", app.modal, " controls=", app.player.controls_enabled)
 	app._interact()
