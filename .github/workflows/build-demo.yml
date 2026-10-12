@@ -66,6 +66,66 @@ jobs:
           if result.returncode or "SCRIPT ERROR:" in output or "NAVIGATION_TESTS:" not in output:
               raise SystemExit("Navigation checks failed")
           PY
+      - name: Verify two-process LAN navigation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tempfile, time
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          with tempfile.TemporaryDirectory() as coord:
+              handles = {}
+              processes = {}
+              try:
+                  for role in ["host", "client"]:
+                      if role == "client":
+                          deadline = time.monotonic() + 20
+                          while not pathlib.Path(coord, "host-ready").exists():
+                              if time.monotonic() > deadline or processes["host"].poll() is not None:
+                                  raise RuntimeError("Host did not open lobby")
+                              time.sleep(0.05)
+                      handles[role] = open(reports / ("lan-" + role + ".log"), "w")
+                      cmd = [editor, "--headless", "--path", "GodotDemo", "--script", "tests/lan_navigation_peer.gd", "--", "--test-mode", "--role=" + role, "--coord=" + coord]
+                      processes[role] = subprocess.Popen(cmd, stdout=handles[role], stderr=subprocess.STDOUT)
+                  for role in ["client", "host"]:
+                      result = processes[role].wait(timeout=45)
+                      handles[role].flush()
+                      log = (reports / ("lan-" + role + ".log")).read_text()
+                      print(log)
+                      if result or "SCRIPT ERROR:" in log or "LAN_NAVIGATION_" not in log:
+                          raise RuntimeError("LAN checks failed: " + role)
+              finally:
+                  for process in processes.values():
+                      if process.poll() is None:
+                          process.kill()
+                          process.wait()
+                  for handle in handles.values():
+                      handle.close()
+          PY
+      - name: Install software rendering support
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libgl1-mesa-dri
+      - name: Render both map layouts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          editor = os.environ["GODOT_BINARY"]
+          reports = pathlib.Path("build-reports")
+          for width in [1280, 960]:
+              capture = str((reports / ("navigation-" + str(width) + ".png")).resolve())
+              cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", editor, "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/navigation_visual.gd", "--", "--test-mode", "--width=" + str(width), "--capture=" + capture]
+              env = os.environ.copy()
+              env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+              result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+              log = result.stdout + result.stderr
+              (reports / ("visual-" + str(width) + ".log")).write_text(log)
+              print(log)
+              if result.returncode or "SCRIPT ERROR:" in log or "NAVIGATION_VISUAL:" not in log:
+                  raise SystemExit("Map render check failed")
+          PY
       - name: Install only required Windows and macOS templates
         shell: bash
         run: |
@@ -114,6 +174,19 @@ jobs:
           with zipfile.ZipFile("builds/macOS/Delivery Simulator.zip") as z:
               z.extractall(macdir)
           pck = next(macdir.rglob("*.pck"))
+          app = next(macdir.glob("*.app"))
+          binary = next((app / "Contents/MacOS").iterdir())
+          with binary.open("rb") as stream:
+              magic, count = struct.unpack(">II", stream.read(8))
+              if magic not in [0xcafebabe, 0xcafebabf]:
+                  raise SystemExit("macOS build is not Universal")
+              entry_size = 20 if magic == 0xcafebabe else 32
+              cpus = set()
+              for _ in range(count):
+                  entry = stream.read(entry_size)
+                  cpus.add(struct.unpack(">I", entry[:4])[0])
+              if not {0x01000007, 0x0100000c}.issubset(cpus):
+                  raise SystemExit("macOS Universal lacks Intel or Apple Silicon")
           script = str(pathlib.Path("GodotDemo/tests/navigation_routes.gd").resolve())
           for tag, pack in [("windows", exe), ("macos", pck)]:
               result = subprocess.run([editor, "--headless", "--main-pack", str(pack.resolve()), "--script", script, "--", "--test-mode"], capture_output=True, text=True, timeout=180)
@@ -137,6 +210,8 @@ jobs:
           LAN: Host Game on one computer; Join Game with the Host IPv4 address on the other. UDP port 7777, matching game versions, same local network.
           Map: streets and buildings match the actual city; teal route, gold pickup, teal delivery, gold dashed final walking access.
           Native OS launch, physical Windows/macOS LAN and FPS require acceptance testing.
+          Godot 4.6.3: MIT license, https://godotengine.org/license/
+          Original generated audio: CC0 1.0, https://creativecommons.org/publicdomain/zero/1.0/
           """
           (pathlib.Path("builds/Windows") / "README.txt").write_text(guide)
           with zipfile.ZipFile(dest / "DeliverySimulatorDemo_Windows_v0.9.0.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
@@ -162,7 +237,7 @@ jobs:
               digest = hashlib.sha256(p.read_bytes()).hexdigest()
               hashes.append(digest + "  " + p.name)
           (dest / "SHA256SUMS.txt").write_text("\n".join(hashes) + "\n")
-          report = {"version": "0.9.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
+          report = {"version": "0.9.0", "commit": os.environ["GITHUB_SHA"], "source_tests": "passed", "windows_pack_tests": "passed", "macos_pack_tests": "passed", "lan_loopback": "passed", "visual_1280x720_960x540": "passed", "native_windows_macos": "not tested", "physical_cross_platform_lan": "not tested", "fps": "not measured"}
           pathlib.Path("build-reports/build.json").write_text(json.dumps(report, indent=2) + "\n")
           print(json.dumps(report))
           PY
