@@ -13,10 +13,11 @@ static func get_bounds() -> Rect2:
 	return Rect2(-HALF_SIZE, -HALF_SIZE, SIZE, SIZE)
 
 static func contains_position(position: Vector3, margin: float = 0.0) -> bool:
-	if not is_finite(position.x) or not is_finite(position.z) or not is_finite(margin):
+	if not position.is_finite() or not is_finite(margin):
 		return false
 	var safe_bounds: Rect2 = PLAYABLE_BOUNDS.grow(-maxf(margin, 0.0))
-	return safe_bounds.has_point(Vector2(position.x, position.z))
+	# Clamping uses both ends inclusively; reject only coordinates beyond them.
+	return position.x >= safe_bounds.position.x and position.x <= safe_bounds.end.x and position.z >= safe_bounds.position.y and position.z <= safe_bounds.end.y
 
 static func contains_point(position: Vector3, margin: float = 0.0) -> bool:
 	return contains_position(position, margin)

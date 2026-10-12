@@ -6,6 +6,7 @@ const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const Placement = preload("res://scripts/vehicle_placement.gd")
 const WorldScript = preload("res://scripts/world.gd")
 const AuthorityScript = preload("res://scripts/lan_authority.gd")
+const VehicleScript = preload("res://scripts/vehicle_controller.gd")
 var checks: int = 0
 var failures: Array[String] = []
 var config: Dictionary
@@ -116,6 +117,7 @@ func test_expanded_authority() -> void:
 	check(authority.orders[0]["pickup_id"] == "warehouse" and authority.orders[0]["delivery_id"] == "house_01", "The Host still publishes the deterministic first order")
 	check(authority._inside_bounds(Vector3(200, 0.1, 0)) and not authority._inside_bounds(Vector3(260, 0.1, 0)), "Server bounds expand with the real city while rejecting the new exterior")
 	check(not authority._inside_bounds(Vector3(200, 7, 0)) and not authority._inside_bounds(Vector3(NAN, 0.1, 0)), "Height and nonfinite pose rejection remain active")
+	test_vehicle_boundary(authority)
 	var origin: Vector3 = Vector3(-200, 0.1, 0)
 	check(Placement.position_is_free(city, origin, PI, definitions["car"]), "Vehicles can occupy an actual new district road beyond the old border")
 	authority.records[2]["position"] = origin
@@ -137,3 +139,31 @@ func test_expanded_authority() -> void:
 	authority.queue_free()
 	city.queue_free()
 	await process_frame
+
+
+func test_vehicle_boundary(authority: Node) -> void:
+	# Seed a valid Host-owned spawn fixture next to the clamp; requests still traverse
+	# the full generation, move-credit, line-of-sight and vehicle collision checks.
+	var saved_record: Dictionary = authority.records[2].duplicate(true)
+	var edge: float = VehicleScript.WORLD_BOUND
+	for side: float in [-1.0, 1.0]:
+		var record: Dictionary = authority.records[2]
+		record["profile"]["owned_vehicles"] = ["bicycle"]
+		record["profile"]["level"] = 2
+		record["position"] = Vector3(side * (edge - 0.1), 0.1, 0)
+		record["vehicle"] = authority._new_vehicle(2, "bicycle", record["position"], PI)
+		record["vehicle"]["occupied"] = true
+		record["move_credit"] = 2.0
+		record["pose_tick_msec"] = Time.get_ticks_msec()
+		var boundary: Vector3 = Vector3(side * edge, 0.1, 0)
+		var payload: Dictionary = {
+			"position": boundary, "yaw": PI, "velocity": Vector3.ZERO,
+			"grounded": true, "carrying": false, "active_vehicle": "bicycle",
+			"vehicle_generation": int(record["vehicle"]["generation"])
+		}
+		authority._accept_pose(2, payload)
+		check(authority.records[2]["position"] == boundary, "A client bicycle pose at the exact %s controller clamp passes server validation" % ("negative" if side < 0.0 else "positive"))
+		payload["position"] = Vector3(side * (edge + 0.01), 0.1, 0)
+		authority._accept_pose(2, payload)
+		check(authority.records[2]["position"] == boundary, "A bicycle pose 0.01 m outside the %s city bound is rejected" % ("negative" if side < 0.0 else "positive"))
+	authority.records[2] = saved_record

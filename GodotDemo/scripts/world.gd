@@ -411,6 +411,7 @@ func _make_large_parks() -> void:
 			if absf(location.x - 160) < 12 or absf(location.z - 180) < 11 or (column == 0 and row == 0):
 				continue
 			_tree(location, 1.05 + float(column % 3) * 0.1, (column + row) % 2)
+	_make_park_tree_clusters()
 	_label(self, "ГОРОДСКОЙ ПАРК", Vector3(-160, 3, -87), 0.018, DARK, 54)
 	_label(self, "ПАРК «ЛЕСНОЙ»", Vector3(160, 3, 127), 0.018, DARK, 54)
 	# Small court beside the forest park pavilion.
@@ -419,6 +420,100 @@ func _make_large_parks() -> void:
 		_box(self, Vector3(210 + side * 10, 0.07, 146), Vector3(0.12, 0.025, 13), _material("court_lines", CREAM))
 		_box(self, Vector3(210, 0.07, 146 + side * 6.5), Vector3(20, 0.025, 0.12), _material("court_lines", CREAM))
 	_box(self, Vector3(210, 0.07, 146), Vector3(0.12, 0.025, 13), _material("court_lines", CREAM))
+
+
+func _make_park_tree_clusters() -> void:
+	# Fixed extra groves, clear of paths, plaza benches, entrances and the court.
+	# Like the original trees, these are decorative static meshes without colliders.
+	var north_grove: Array[Vector3] = [
+		Vector3(-211, 0, -208),
+		Vector3(-197, 0, -208),
+		Vector3(-183, 0, -208),
+		Vector3(-147, 0, -208),
+		Vector3(-133, 0, -208),
+		Vector3(-119, 0, -208),
+		Vector3(-105, 0, -208),
+		Vector3(-211, 0, -194),
+		Vector3(-197, 0, -194),
+		Vector3(-183, 0, -194),
+		Vector3(-147, 0, -194),
+		Vector3(-119, 0, -194),
+		Vector3(-105, 0, -194),
+		Vector3(-211, 0, -180),
+		Vector3(-197, 0, -180),
+		Vector3(-183, 0, -180),
+		Vector3(-147, 0, -180),
+		Vector3(-133, 0, -180),
+		Vector3(-119, 0, -180),
+		Vector3(-105, 0, -180),
+		Vector3(-211, 0, -144),
+		Vector3(-197, 0, -144),
+		Vector3(-183, 0, -144),
+		Vector3(-133, 0, -144),
+		Vector3(-119, 0, -144),
+		Vector3(-105, 0, -144),
+		Vector3(-211, 0, -130),
+		Vector3(-183, 0, -130),
+		Vector3(-147, 0, -130),
+		Vector3(-119, 0, -130),
+		Vector3(-105, 0, -130),
+		Vector3(-197, 0, -116),
+		Vector3(-183, 0, -116),
+		Vector3(-147, 0, -116),
+		Vector3(-133, 0, -116),
+		Vector3(-119, 0, -116),
+		Vector3(-105, 0, -116),
+		Vector3(-183, 0, -102),
+		Vector3(-147, 0, -102),
+		Vector3(-119, 0, -102),
+		Vector3(-105, 0, -102)
+	]
+	var south_grove: Array[Vector3] = [
+		Vector3(124, 0, 140),
+		Vector3(138, 0, 140),
+		Vector3(180, 0, 140),
+		Vector3(96, 0, 154),
+		Vector3(110, 0, 154),
+		Vector3(124, 0, 154),
+		Vector3(138, 0, 154),
+		Vector3(180, 0, 154),
+		Vector3(96, 0, 166),
+		Vector3(110, 0, 166),
+		Vector3(124, 0, 166),
+		Vector3(138, 0, 166),
+		Vector3(180, 0, 166),
+		Vector3(194, 0, 166),
+		Vector3(208, 0, 166),
+		Vector3(222, 0, 166),
+		Vector3(96, 0, 196),
+		Vector3(110, 0, 196),
+		Vector3(124, 0, 196),
+		Vector3(138, 0, 196),
+		Vector3(180, 0, 196),
+		Vector3(194, 0, 196),
+		Vector3(208, 0, 196),
+		Vector3(222, 0, 196),
+		Vector3(96, 0, 208),
+		Vector3(110, 0, 208),
+		Vector3(124, 0, 208),
+		Vector3(138, 0, 208),
+		Vector3(180, 0, 208),
+		Vector3(194, 0, 208),
+		Vector3(208, 0, 208),
+		Vector3(222, 0, 208),
+		Vector3(96, 0, 222),
+		Vector3(110, 0, 222),
+		Vector3(124, 0, 222),
+		Vector3(138, 0, 222),
+		Vector3(180, 0, 222),
+		Vector3(194, 0, 222),
+		Vector3(208, 0, 222),
+		Vector3(222, 0, 222)
+	]
+	for index in range(north_grove.size()):
+		_tree(north_grove[index], 0.90 + float(index % 4) * 0.09, index % 2)
+	for index in range(south_grove.size()):
+		_tree(south_grove[index], 0.92 + float(index % 4) * 0.08, (index + 1) % 2)
 
 
 func _make_extended_street_details() -> void:
