@@ -45,6 +45,7 @@ func _run() -> void:
 	root.add_child(app)
 	await process_frame
 	await physics_frame
+	app.lan_session.event_received.connect(func(event: Dictionary) -> void: print("LAN_EVENT: ", role, " ", event))
 	if role == "host":
 		await run_host()
 	else:
@@ -118,6 +119,7 @@ func run_client() -> void:
 		await process_frame
 	Input.action_release("move_forward")
 	await physics_frame
+	print("LAN_INTERACT_DIAGNOSTIC: position=", app.player.global_position, " target=", pickup, " distance=", app.player.global_position.distance_to(pickup), " can=", app._can_interact(), " modal=", app.modal, " controls=", app.player.controls_enabled)
 	app._interact()
 	var picked: bool = await wait_for(func() -> bool: return app.active_order.get("state", "") == "PickedUp")
 	check(picked, "Real movement and E interaction obtain Host-confirmed pickup")
