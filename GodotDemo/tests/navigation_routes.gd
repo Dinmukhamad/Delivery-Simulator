@@ -90,8 +90,11 @@ func _run() -> void:
 	for i: int in range(20):
 		nav.guidance(Vector3(-20, 0, 0), Vector3(20, 0, 0), "1:Accepted", "walking")
 	check(nav.query_count == queries, "Standing still never runs AStar every frame")
-	await create_timer(0.45).timeout
-	nav.guidance(Vector3(-20, 0, 20), Vector3(20, 0, 0), "1:Accepted", "walking")
+	var wait_until: int = Time.get_ticks_msec() + 500
+	while Time.get_ticks_msec() < wait_until:
+		await process_frame
+	var off_route: Dictionary = nav.guidance(Vector3(-26, 0, 26), Vector3(20, 0, 0), "1:Accepted", "walking")
+	print("CACHE_DIAGNOSTIC: before=%d after=%d status=%s" % [queries, nav.query_count, off_route.get("status", "")])
 	check(nav.query_count == queries + 1, "Leaving the route rebuilds it")
 	var switched: Dictionary = nav.guidance(Vector3(-20, 0, 20), Vector3(-20, 0, -20), "1:PickedUp", "walking")
 	check(switched["points"][-1].is_equal_approx(Vector3(-20, 0, -20)), "Confirmed pickup switches the exact destination")
