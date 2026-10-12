@@ -147,6 +147,14 @@ func _run() -> void:
 		if not app.hud._results_team_text.text.contains("уже включён"):
 			_fail("Results do not explain that the bonus is included in personal totals.")
 			return
+		if width == 1280:
+			for action: Node in app.hud._results_restart.get_parent().get_children():
+				if not action is Button:
+					continue
+				var button: Button = action
+				if not _inside_visible_scroll(button, Rect2(Vector2.ZERO, app.hud._root.size)):
+					_fail("Results actions are clipped at the standard desktop resolution.")
+					return
 	else:
 		var view: Rect2 = Rect2(Vector2.ZERO, app.hud._root.size)
 		if not view.encloses(app.hud._team_panel.get_global_rect()):
@@ -168,3 +176,12 @@ func _run() -> void:
 	await process_frame
 	await create_timer(0.25).timeout
 	quit(0)
+
+func _inside_visible_scroll(control: Control, viewport_rect: Rect2) -> bool:
+	var visible_rect: Rect2 = viewport_rect
+	var ancestor: Node = control.get_parent()
+	while ancestor != null:
+		if ancestor is ScrollContainer:
+			visible_rect = visible_rect.intersection(ancestor.get_global_rect())
+		ancestor = ancestor.get_parent()
+	return visible_rect.encloses(control.get_global_rect())

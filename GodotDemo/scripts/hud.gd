@@ -1094,7 +1094,7 @@ func _update_team_results(stats: Dictionary) -> void:
 	var outcome: String = "Ваш командный бонус: +%s ₽ · +%d XP (уже включён в итоги)." % [_amount(money), xp]
 	if money <= 0 and xp <= 0:
 		outcome = "Командный бонус не получен: вы не завершили личную доставку." if int(team.get("contributions", 0)) < 1 else "Командный бонус не получен: общий план не выполнен."
-	_results_team_text.text = "%s\nВаш вклад: %d доставок. %s" % [_team_goal_text(team), int(team.get("contributions", 0)), outcome]
+	_results_team_text.text = "%s\nДоставлено вами: %d. %s" % [_team_goal_text(team), int(team.get("contributions", 0)), outcome]
 
 
 func _quality_bar_style(color: Color) -> StyleBoxFlat:
@@ -1170,7 +1170,7 @@ func _build_pause() -> void :
 
 
 func _build_results() -> void :
-	var items: Array[Control] = _scroll_overlay(Vector2(900, 480))
+	var items: Array[Control] = _scroll_overlay(Vector2(900, 600))
 	_results = items[0]
 	var content: VBoxContainer = _vbox(items[1], 10)
 	content.add_child(_label("ИТОГИ СМЕНЫ", 12, TEAL))
