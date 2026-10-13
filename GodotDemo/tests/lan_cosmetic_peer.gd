@@ -108,7 +108,7 @@ func _run() -> void:
 	app.lan_session.event_received.connect(func(event: Dictionary) -> void:
 		if str(event.get("type", "")) == "cosmetic_result":
 			cosmetic_results.append(event.duplicate(true)))
-	check(app.DEMO_VERSION == "0.13.0" and app.lan_session.GAME_VERSION == "0.13.0", "Both production compatibility versions are 0.13.0")
+	check(app.DEMO_VERSION == str(ProjectSettings.get_setting("application/config/version")) and app.lan_session.GAME_VERSION == app.DEMO_VERSION, "Both production compatibility versions match the project version")
 	migrate_old_profile()
 	choose_offline_style()
 	if role == "host":
