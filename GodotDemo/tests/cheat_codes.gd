@@ -65,7 +65,7 @@ func apply_checked(profile: Dictionary, code: Variant, expected_money: int, expe
 	return result
 
 func test_allowlist() -> void:
-	check(FileAccess.file_exists("res://scripts/cheat_code_rules.gd"), "The export contains the cheat rules")
+	check(ResourceLoader.exists("res://scripts/cheat_code_rules.gd"), "The export contains the cheat rules")
 	var entries: Array[Dictionary] = Rules.code_catalog()
 	var names: Array[String] = []
 	for entry: Dictionary in entries:
@@ -261,6 +261,34 @@ func test_authority() -> void:
 	authority.phase = "results"
 	authority.handle_request(1, "cheat_code", {"code": "MONEY50000"})
 	check(cheat_events.size() == events and authority.revision == revision and authority.get_profile(1) == before, "Unknown, disconnected and ended-session requesters cannot use codes")
+	fresh(authority, city)
+	authority.records[1]["profile"]["money"] = CAP
+	authority.records[1]["profile"]["xp"] = CAP
+	authority.records[1]["profile"]["level"] = 10
+	authority.records[1]["profile"]["rank"] = "Delivery Master"
+	var paid_order: Dictionary = {}
+	for order: Dictionary in authority.orders:
+		if order.get("type", "") == "standard" and str(order.get("event_id", "")).is_empty():
+			paid_order = order.duplicate(true)
+			break
+	check(not paid_order.is_empty(), "Capped Host career still receives a real ordinary delivery")
+	if not paid_order.is_empty():
+		var earned_before: int = int(authority.get_profile(1)["total_money_earned"])
+		var deliveries_before: int = int(authority.get_profile(1)["total_deliveries"])
+		authority.handle_request(1, "accept", {"id": int(paid_order["id"])})
+		authority.records[1]["position"] = paid_order["pickup_position"]
+		authority.handle_request(1, "interact", {})
+		check(authority.records[1]["active_order"].get("state", "") == "PickedUp", "Capped Host career can physically collect its parcel")
+		authority.records[1]["position"] = paid_order["delivery_position"]
+		authority.handle_request(1, "interact", {})
+		var paid: Dictionary = authority.get_profile(1)
+		var paid_stats: Dictionary = authority.records[1]["shift_stats"]
+		check(authority.records[1]["active_order"].is_empty() and paid["money"] == CAP and paid["xp"] == CAP, "A legitimate Host delivery cannot overflow capped career money or XP")
+		check(int(paid["total_deliveries"]) == deliveries_before + 1 and int(paid["total_money_earned"]) == earned_before + int(paid_order["reward"]), "The capped Host still credits only its actual completed delivery")
+		check(int(paid_stats["deliveries"]) == 1 and int(paid_stats["money"]) == int(paid_order["reward"]) and int(paid_stats["xp"]) == int(paid_order["xp"]), "Actual Host shift earnings contain the delivery reward and exclude the capped career balance")
+		var confirmed_paid: Dictionary = paid.duplicate(true)
+		authority.handle_request(1, "interact", {})
+		check(authority.get_profile(1) == confirmed_paid, "A repeated interaction cannot credit a capped Host delivery twice")
 	authority.queue_free()
 	city.queue_free()
 	await process_frame
@@ -423,6 +451,35 @@ func test_actual_menu_and_solo() -> void:
 	var starter_before: Dictionary = app.profile.duplicate(true)
 	app._spawn_vehicle("car")
 	check(app.vehicles.is_empty() and app.profile == starter_before and app.player.riding_vehicle == null, "Normal garage spawning still rejects an owned car below its required level")
+	app.profile["money"] = CAP
+	app.profile["xp"] = CAP
+	app.profile["level"] = 10
+	app.profile["rank"] = "Delivery Master"
+	app._begin_shift()
+	freeze_app(app)
+	var paid_order: Dictionary = {}
+	for order: Dictionary in app.orders:
+		if order.get("type", "") == "standard" and str(order.get("event_id", "")).is_empty():
+			paid_order = order.duplicate(true)
+			break
+	check(not paid_order.is_empty(), "Capped Solo career still receives a real ordinary delivery")
+	if not paid_order.is_empty():
+		var earned_before: int = int(app.profile["total_money_earned"])
+		var deliveries_before: int = int(app.profile["total_deliveries"])
+		app._accept_order(int(paid_order["id"]))
+		app.player.reset_at(paid_order["pickup_position"] + Vector3(0, 0.15, 0))
+		await physics_frame
+		app._interact()
+		check(app.active_order.get("state", "") == "PickedUp", "Capped Solo career can physically collect its parcel")
+		app.player.reset_at(paid_order["delivery_position"] + Vector3(0, 0.15, 0))
+		await physics_frame
+		app._interact()
+		check(app.active_order.is_empty() and app.profile["money"] == CAP and app.profile["xp"] == CAP, "A legitimate Solo delivery cannot overflow capped career money or XP")
+		check(int(app.profile["total_deliveries"]) == deliveries_before + 1 and int(app.profile["total_money_earned"]) == earned_before + int(paid_order["reward"]), "Capped Solo still credits only its actual completed delivery")
+		check(int(app.shift_stats["deliveries"]) == 1 and int(app.shift_stats["money"]) == int(paid_order["reward"]) and int(app.shift_stats["xp"]) == int(paid_order["xp"]), "Actual Solo shift earnings contain only the completed delivery reward")
+		var confirmed_paid: Dictionary = app.profile.duplicate(true)
+		app._interact()
+		check(app.profile == confirmed_paid, "A repeated interaction cannot credit a capped Solo delivery twice")
 	check(app._save_profile(), "Normal profile save is a harmless success in test mode")
 	check(FileAccess.file_exists("user://profile.json") == save_exists and (not save_exists or FileAccess.get_file_as_string("user://profile.json") == saved_text), "Actual code submissions never create or overwrite a personal save in --test-mode")
 	app.queue_free()
