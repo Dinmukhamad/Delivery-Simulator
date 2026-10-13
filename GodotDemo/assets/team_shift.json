@@ -1,0 +1,7 @@
+{
+  "deliveries_per_player": 4,
+  "bonus_money": 500,
+  "bonus_xp": 100,
+  "offer_seconds": 10,
+  "handoff_distance": 3.2
+}

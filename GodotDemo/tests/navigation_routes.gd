@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Navigation = preload("res://scripts/navigation_service.gd")
+const CityLayout = preload("res://scripts/city_layout.gd")
 var checks: int = 0
 var failures: Array[String] = []
 
@@ -49,6 +50,110 @@ func road_route(result: Dictionary, roads: Array) -> bool:
 			if not inside:
 				return false
 	return not points.is_empty()
+
+
+func route_in_bounds(result: Dictionary, bounds: Rect2) -> bool:
+	var points: Array = result.get("points", [])
+	for point: Vector3 in points:
+		if not bounds.has_point(Vector2(point.x, point.z)):
+			return false
+	return not points.is_empty()
+
+func motor_middle(result: Dictionary, roads: Array, obstacles: Array, clearance: float) -> bool:
+	# First connector reaches the street. Last connector is explicitly on foot.
+	# Every intervening segment must stay on asphalt and avoid motor obstacles.
+	var points: Array = result.get("points", [])
+	if points.size() < 3:
+		return false
+	var middle: Array = points.slice(1, points.size() - 1)
+	return road_route({"points": middle}, roads) and safe_route({"points": middle}, obstacles, clearance)
+
+func _large_city_routes(layout: Dictionary) -> void:
+	var nav = Navigation.new()
+	nav.configure(layout)
+	var bounds: Rect2 = layout["bounds"]
+	var playable: Rect2 = layout["playable_bounds"]
+	check(bounds.size.is_equal_approx(Vector2(516, 516)), "City width and depth are three times the original 172 m")
+	check(playable.size.x > 500.0 and playable.size.y > 500.0, "Navigation uses the expanded playable bounds")
+	var started: int = Time.get_ticks_msec()
+	var origin: Vector3 = Vector3(-60, 0, 40)
+	var addresses: Array = []
+	addresses.append_array(layout["pickups"])
+	addresses.append_array(layout["deliveries"])
+	check(layout["pickups"].size() >= 12 and layout["deliveries"].size() >= 40, "Expanded districts have functioning pickup and delivery addresses")
+	for index: int in range(addresses.size()):
+		var address: Dictionary = addresses[index]
+		var target: Vector3 = address["position"]
+		var result: Dictionary = nav.route(origin, target, "walking")
+		var label: String = str(address.get("name", index))
+		check(result["status"] in ["ok", "arrived"], "Courier can reach city address: " + label)
+		check(safe_route(result, layout["obstacles"], 0.35), "No route crosses a building on the way to: " + label)
+		check(route_in_bounds(result, playable), "Address route stays inside the expanded city: " + label)
+		if not result["points"].is_empty():
+			check(result["points"][-1].is_equal_approx(target), "Address route reaches its exact pickup/delivery marker: " + label)
+		if index % 20 == 0:
+			print("LARGE_CITY_NAVIGATION_PROGRESS: %d/%d addresses" % [index + 1, addresses.size()])
+	# Real street corners bracket both parks and the old centre. Different
+	# clearances and road-only modes are tested against the identical geometry.
+	for mode: String in ["walking", "bicycle", "scooter", "car"]:
+		var across: Dictionary = nav.route(Vector3(-240, 0, -240), Vector3(240, 0, 240), mode)
+		check(across["status"] == "ok", mode + " can cross the complete 516 m city")
+		check(route_in_bounds(across, playable), mode + " cross-city route respects borders")
+		var padding: float = 2.25 if mode == "car" else (0.6 if mode == "scooter" else (0.45 if mode == "bicycle" else 0.35))
+		check(safe_route(across, layout["obstacles"], padding), mode + " cross-city route keeps vehicle clearance")
+		check(float(across["distance"]) >= Vector3(-240, 0, -240).distance_to(Vector3(240, 0, 240)), mode + " reports physical route distance")
+		if mode in ["scooter", "car"]:
+			check(road_route(across, layout["roads"]), mode + " stays on actual streets instead of cutting through a park")
+		# Every district's address must have a safe, short street access. Check
+		# anchors directly for all addresses, plus full routes at regular intervals.
+		if mode in ["scooter", "car"]:
+			var grid = nav._profile(mode)
+			var foot_grid = nav._profile("walking")
+			for index: int in range(addresses.size()):
+				var target: Vector3 = addresses[index]["position"]
+				var id: Vector2i = nav._anchor(Vector2(target.x, target.z), grid, foot_grid)
+				var label: String = str(addresses[index].get("name", index))
+				check(id.x >= 0, mode + " has a safe street access within 24 m: " + label)
+				if id.x >= 0:
+					var access: Vector2 = grid.get_point_position(id)
+					check(access.distance_to(Vector2(target.x, target.z)) <= 24.0, mode + " avoids a long off-road motor connector: " + label)
+				if index % 8 == 0:
+					var destination: Dictionary = nav.route(origin, target, mode)
+					check(destination["status"] in ["ok", "arrived"], mode + " can drive to district address: " + label)
+					check(safe_route(destination, layout["obstacles"], 0.35), mode + " final walking access is clear: " + label)
+					check(motor_middle(destination, layout["roads"], layout["obstacles"], padding), mode + " district route middle stays on streets: " + label)
+		elif mode == "bicycle":
+			for index: int in range(0, addresses.size(), 8):
+				var target: Vector3 = addresses[index]["position"]
+				var destination: Dictionary = nav.route(origin, target, mode)
+				check(destination["status"] in ["ok", "arrived"], "Bicycle can reach representative district address %d" % index)
+				check(safe_route(destination, layout["obstacles"], 0.45), "Bicycle district access maintains clearance %d" % index)
+	var walking_grid = nav._profile("walking")
+	check(walking_grid.cell_size.x <= 1.0 and walking_grid.cell_size.y <= 1.0, "Larger map preserves metre-resolution narrow door passages")
+	var first: Vector2i = Vector2i(10, 10)
+	var last: Vector2i = Vector2i(20, 20)
+	check(is_equal_approx(walking_grid._estimate_cost(first, last), walking_grid.get_point_position(first).distance_to(walking_grid.get_point_position(last))), "AStar heuristic remains physical distance after map enlargement")
+	var cache_key: String = "large-city:Accepted"
+	var target: Vector3 = Vector3(240, 0, 240)
+	nav.guidance(Vector3(-240, 0, -240), target, cache_key, "walking")
+	var queries: int = nav.query_count
+	var profile_count: int = nav.diagnostics()["profiles"]
+	for frame: int in range(120):
+		nav.guidance(Vector3(-240, 0, -240), target, cache_key, "walking")
+	check(nav.query_count == queries, "A full city route is cached across 120 stationary HUD frames")
+	check(nav.diagnostics()["profiles"] == profile_count, "HUD frames reuse already-built static navigation profiles")
+	check(nav.route(origin, Vector3(260, 0, 0))["status"] == "no_route", "Expanded city rejects a target beyond its boundary")
+	check(nav.route(Vector3(-260, 0, 0), origin)["status"] == "no_route", "Expanded city rejects a start beyond its boundary")
+	print("LARGE_CITY_NAVIGATION_METRICS: elapsed_ms=%d diagnostics=%s" % [Time.get_ticks_msec() - started, JSON.stringify(nav.diagnostics())])
+	# Keep regression coverage for a narrow corridor with the full city extent.
+	var walls: Array = [Rect2(-258, -258, 516, 258.17), Rect2(-258, 2.17, 516, 255.83)]
+	nav.configure(fixture([], [], walls, Rect2(-258, -258, 516, 516)))
+	var passage: Dictionary = nav.route(Vector3(-200, 0, 1.17), Vector3(200, 0, 1.17))
+	check(passage["status"] == "ok", "A shifted 2 m passage remains reachable on a 516 m map")
+	check(safe_route(passage, walls, 0.35), "Large-map narrow passage has no unsafe connector")
+	nav.configure(fixture([], [], [Rect2(-1, -258, 2, 516)], Rect2(-258, -258, 516, 516)))
+	var blocked: Dictionary = nav.route(Vector3(-20, 0, 0), Vector3(20, 0, 0))
+	check(blocked["status"] == "no_route" and blocked["points"].is_empty(), "A full-height wall never yields a straight-line fallback on a large map")
 
 func _run() -> void:
 	if not OS.get_cmdline_user_args().has("--test-mode"):
@@ -105,9 +210,10 @@ func _run() -> void:
 	app._play_solo()
 	app._close_modal()
 	var layout: Dictionary = app.city.get_map_layout()
-	check(layout["roads"].size() == 6, "Map records the city's three streets on each axis")
-	check(layout["buildings"].size() == 20, "Map records all twenty actual buildings")
-	check(layout["obstacles"].size() >= 24, "Routing includes building and boundary collisions")
+	check(layout["roads"].size() >= 26, "Map records expanded streets and clipped park road segments")
+	check(layout["buildings"].size() >= 80, "Map records the existing centre and substantial new districts")
+	check(layout["obstacles"].size() >= layout["buildings"].size() + 4, "Routing includes every building and boundary collision")
+	_large_city_routes(layout)
 	var money: int = int(app.profile["money"])
 	var order_id: int = int(app.orders[0]["id"])
 	app._accept_order(order_id)

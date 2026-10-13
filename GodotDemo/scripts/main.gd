@@ -12,18 +12,35 @@ const FragileRules = preload("res://scripts/fragile_rules.gd")
 const SettingsService = preload("res://scripts/settings_service.gd")
 const AudioManagerScript = preload("res://scripts/audio_manager.gd")
 const NavigationService = preload("res://scripts/navigation_service.gd")
+const CityOrderRules = preload("res://scripts/city_order_rules.gd")
+const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
+const CheatCodeRules = preload("res://scripts/cheat_code_rules.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.9.0"
+const DEMO_VERSION: = "0.14.0"
 
 var city
 var player
 var hud
 var profile: Dictionary = {}
 var balance: Dictionary = {}
+var city_order_config: Dictionary = {}
+var district_event_config: Dictionary = {}
+var _solo_elapsed_seconds: float = 0.0
+var _solo_event_phase: String = "ended"
+var _solo_event_id: String = ""
+var _solo_event_delivered: int = 0
+var _solo_event_bonus_money: int = 0
+var _network_district_event: Dictionary = {}
+var _network_order_event: Dictionary = {}
 var orders: Array[Dictionary] = []
 var active_order: Dictionary = {}
 var state: String = "menu"
 var modal: String = ""
+var _customization_return_modal: String = ""
+var _cheat_return_modal: String = ""
+var _cheat_return_customization_modal: String = ""
+var cosmetic_defs: Dictionary = {}
 var shift_remaining: float = 900.0
 var shift_stats: Dictionary = {}
 var next_order_id: int = 1
@@ -36,6 +53,8 @@ var vehicle_defs: Dictionary = {}
 var vehicles: Dictionary = {}
 var _network_players: Array = []
 var _network_leaderboard: Array = []
+var _network_team: Dictionary = {}
+var _network_handoffs: Dictionary = {}
 var _last_network_revision: int = -1
 var _snapshot_time_msec: int = 0
 var _snapshot_remaining: float = 0.0
@@ -51,7 +70,10 @@ func _ready() -> void :
 	test_mode = OS.get_cmdline_user_args().has("--test-mode")
 	_define_input()
 	balance = _load_balance()
+	city_order_config = CityOrderRules.load_config()
+	district_event_config = DistrictEventRules.load_config()
 	vehicle_defs = VehicleCatalogScript.load_definitions()
+	cosmetic_defs = CosmeticCatalog.load_definitions()
 	profile = _load_profile()
 	city = WorldScript.new()
 	add_child(city)
@@ -60,6 +82,7 @@ func _ready() -> void :
 	player = PlayerScript.new()
 	add_child(player)
 	player.reset_at(city.spawn_position)
+	_apply_profile_appearance()
 	if player.has_method("set_view_direction"):
 		player.set_view_direction(PI)
 	hud = HudScript.new()
@@ -74,6 +97,10 @@ func _ready() -> void :
 	hud.modal_closed.connect(_close_modal)
 	hud.multiplayer_requested.connect(_open_lan_menu)
 	hud.host_requested.connect(_host_lan)
+	hud.handoff_offer_requested.connect(_offer_handoff)
+	hud.handoff_accept_requested.connect(_accept_handoff)
+	hud.handoff_decline_requested.connect(_decline_handoff)
+	hud.handoff_cancel_requested.connect(_cancel_handoff)
 	hud.join_requested.connect(_join_lan)
 	hud.ready_requested.connect(_set_lan_ready)
 	hud.start_requested.connect(_start_lan_shift)
@@ -81,6 +108,13 @@ func _ready() -> void :
 	hud.vehicle_buy_requested.connect(_buy_vehicle)
 	hud.vehicle_spawn_requested.connect(_spawn_vehicle)
 	hud.garage_closed.connect(_close_modal)
+	hud.customization_requested.connect(_open_customization)
+	hud.cosmetic_buy_requested.connect(_buy_cosmetic)
+	hud.cosmetic_select_requested.connect(_select_cosmetic)
+	hud.customization_closed.connect(_close_customization)
+	hud.cheats_requested.connect(_open_cheats)
+	hud.cheat_code_requested.connect(_submit_cheat_code)
+	hud.cheats_closed.connect(_close_cheats)
 	hud.settings_requested.connect(_open_settings)
 	hud.settings_apply_requested.connect(_apply_settings)
 	hud.settings_closed.connect(_close_settings)
@@ -154,7 +188,9 @@ func _process(delta: float) -> void :
 			_update_hud()
 		return
 	if state == "playing":
+		_solo_elapsed_seconds += minf(maxf(delta, 0.0), maxf(shift_remaining, 0.0))
 		shift_remaining = maxf(0.0, shift_remaining - delta)
+		_advance_solo_event()
 		if not active_order.is_empty() and active_order.get("type", "standard") == "express":
 			active_order["remaining"] = maxf(0.0, float(active_order["remaining"]) - delta)
 			if float(active_order["remaining"]) <= 0.0:
@@ -168,7 +204,11 @@ func _input(event: InputEvent) -> void :
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 		if key == KEY_ESCAPE:
-			if modal == "settings":
+			if modal == "cheats":
+				_close_cheats()
+			elif modal == "customization":
+				_close_customization()
+			elif modal == "settings":
 				_close_settings()
 			elif state in ["network_menu", "connecting", "lobby"]:
 				_leave_lan()
@@ -180,6 +220,16 @@ func _input(event: InputEvent) -> void :
 				else:
 					_pause()
 			get_viewport().set_input_as_handled()
+		elif key == KEY_F2:
+			if modal == "cheats":
+				_close_cheats()
+			else:
+				_open_cheats()
+			get_viewport().set_input_as_handled()
+		elif modal in ["cheats", "customization", "settings"]:
+			# LineEdit retains text/Enter events; player and vehicle controls
+			# remain disabled until the dialog has closed.
+			return
 		elif state == "playing" and key == KEY_TAB:
 			if modal == "orders":
 				_close_modal()
@@ -205,13 +255,19 @@ func _input(event: InputEvent) -> void :
 func _notification(what: int) -> void :
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_quit_game()
-	elif what == NOTIFICATION_WM_WINDOW_FOCUS_OUT and state == "playing":
-		_pause()
+	elif what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		if state == "playing":
+			_pause()
+		elif modal == "cheats":
+			_close_cheats()
+		elif modal == "customization":
+			_close_customization()
 
 func _begin_shift() -> void :
 	if player == null:
 		return
 	_dismiss_settings()
+	_dismiss_cheats()
 	if _lan_active():
 		_restart_shift()
 		return
@@ -220,11 +276,20 @@ func _begin_shift() -> void :
 		_record_best_shift()
 	_clear_vehicles()
 	shift_remaining = float(balance.get("shift_seconds", 900))
+	_solo_elapsed_seconds = 0.0
+	_solo_event_phase = "waiting"
+	_solo_event_id = "lunch_rush:1"
+	_solo_event_delivered = 0
+	_solo_event_bonus_money = 0
 	_reset_shift_stats()
 	active_order.clear()
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	player.set_carrying(false)
 	player.reset_at(city.spawn_position)
 	_spawn_owned_vehicle_at_start()
@@ -240,49 +305,94 @@ func _begin_shift() -> void :
 	hud.notify("Выберите заказ, заберите коробку и доставьте ее по адресу.")
 
 func _reset_shift_stats() -> void :
-	shift_stats = {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0}
+	shift_stats = {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0, "event_deliveries": 0, "event_bonus_money": 0}
 
-func _make_order(first: bool = false) -> Dictionary:
-	var pickup: Dictionary = city.pickup_points[0] if first else city.pickup_points.pick_random()
-	var options: Array[Dictionary] = []
-	for candidate: Dictionary in city.delivery_points:
-		var distance: float = pickup["position"].distance_to(candidate["position"])
-		if distance <= 120.0 and distance >= 8.0:
-			options.append(candidate)
-	if options.is_empty():
-		options.assign(city.delivery_points)
-	var destination: Dictionary = city.delivery_points[0] if first else options.pick_random()
-	var length: float = pickup["position"].distance_to(destination["position"])
-	var is_fragile: bool = not first and int(profile["level"]) >= FragileRules.required_level(balance) and randf() < clampf(float(balance.get("fragile_chance", 0.25)), 0.0, 1.0)
-	var is_express: bool = not first and not is_fragile and int(profile["level"]) >= int(balance.get("express_required_level", 3)) and randf() < 0.3
-	var base: int = randi_range(int(balance.get("base_reward_min", 110)), int(balance.get("base_reward_max", 160))) + int(round(length * float(balance.get("distance_reward", 3.5))))
-	var multiplier: float = float(balance.get("fragile_multiplier", 1.3)) if is_fragile else (float(balance.get("express_multiplier", 1.5)) if is_express else 1.0)
-	var order: Dictionary = {
-		"id": next_order_id, 
-		"title": "%s → %s" % [pickup["name"], destination["name"]], 
-		"type": "fragile" if is_fragile else ("express" if is_express else "standard"), 
-		"type_name": "Хрупкий груз" if is_fragile else ("Экспресс" if is_express else "Стандарт"), 
-		"pickup_name": pickup["name"], "delivery_name": destination["name"], 
-		"pickup_position": pickup["position"], "delivery_position": destination["position"], 
-		"pickup_id": pickup["id"], "delivery_id": destination["id"], 
-		"distance": length, "base_reward": base, "reward": int(round(base * multiplier)), 
-		"xp": int(balance.get("fragile_xp", 75)) if is_fragile else (int(balance.get("express_xp", 75)) if is_express else int(balance.get("standard_xp", 50))), 
-		"required_level": FragileRules.required_level(balance) if is_fragile else (int(balance.get("express_required_level", 3)) if is_express else 1), 
-		"time_limit": maxf(45.0, length / 4.5 * 1.7 + 18.0), 
-		"state": "Available", "locked": false
-	}
-	if is_fragile:
-		order.merge(FragileRules.initial_fields(balance), true)
-	next_order_id += 1
+func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
+	var couriers: Array = [{"profile": profile, "position": player.position}]
+	var order: Dictionary = CityOrderRules.make_order(next_order_id, city.pickup_points, city.delivery_points, balance, couriers, vehicle_defs, city_order_config, first, local_only)
+	if not order.is_empty():
+		next_order_id += 1
 	return order
 
-func _fill_orders(first: bool = false) -> void :
+func _district_event_view() -> Dictionary:
+	if _lan_active():
+		var event: Dictionary = _network_district_event.duplicate(true)
+		if event.is_empty():
+			return {}
+		var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+		# Client prediction changes presentation only; the Host owns phase transitions.
+		if str(event.get("phase", "")) == "active":
+			event["remaining"] = maxf(0.0, float(event.get("remaining", 0.0)) - elapsed)
+		elif str(event.get("phase", "")) in ["waiting", "cooldown"]:
+			event["starts_in"] = maxf(0.0, float(event.get("starts_in", 0.0)) - elapsed)
+		return event
+	var event: Dictionary = DistrictEventRules.snapshot(_solo_elapsed_seconds, state in ["playing", "paused"], district_event_config)
+	event["delivered"] = _solo_event_delivered
+	event["bonus_money"] = _solo_event_bonus_money
+	return event
+
+
+func _order_event_view() -> Dictionary:
+	if _lan_active():
+		var view: Dictionary = _network_order_event.duplicate(true)
+		if view.is_empty():
+			return {}
+		var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+		view["remaining"] = maxf(0.0, float(view.get("remaining", 0.0)) - elapsed)
+		if float(view["remaining"]) <= 0.0:
+			view["bonus_available"] = false
+			view["bonus_money"] = 0
+		return view
+	return DistrictEventRules.order_view(active_order, _solo_elapsed_seconds, state in ["playing", "paused"], district_event_config)
+
+
+func _advance_solo_event() -> void:
+	if _lan_active() or state != "playing":
+		return
+	var event: Dictionary = _district_event_view()
+	var transition: bool = str(event["phase"]) != _solo_event_phase or str(event["id"]) != _solo_event_id
+	_solo_event_phase = str(event["phase"])
+	_solo_event_id = str(event["id"])
+	var removed: bool = false
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]) and not DistrictEventRules.can_accept(orders[index], event):
+			orders.remove_at(index)
+			removed = true
+	if transition or removed:
+		_fill_orders()
+		if event["phase"] == "active":
+			hud.notify("Обеденный час! Кофейня → офисы делового центра: +%d%% к деньгам за доставку в следующие %d с." % [int(round((float(event["bonus_multiplier"]) - 1.0) * 100.0)), int(ceil(float(event["remaining"])))])
+
+
+func _fill_orders(first: bool = false) -> void:
 	if _lan_active():
 		return
-	var count: int = clampi(int(balance.get("available_orders", 6)), 1, 10)
-	while orders.size() < count:
-		orders.append(_make_order(first and orders.is_empty()))
+	var event: Dictionary = _district_event_view()
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]) and not DistrictEventRules.can_accept(orders[index], event):
+			orders.remove_at(index)
+	var count: int = clampi(int(balance.get("available_orders", 6)), 1, 6)
+	var normal: Array[Dictionary] = DistrictEventRules.normal_orders(orders)
+	while normal.size() < count:
+		var local_only: bool = CityOrderRules.local_order_count(normal, city_order_config) < int(city_order_config["minimum_local_orders"])
+		var order: Dictionary = _make_order(first and normal.is_empty(), local_only)
+		if order.is_empty():
+			break
+		orders.append(order)
+		normal.append(order)
+	if event.get("phase", "") == "active":
+		var event_count: int = orders.size() - normal.size()
+		while event_count < int(district_event_config["available_orders"]):
+			var order: Dictionary = DistrictEventRules.make_order(next_order_id, city.pickup_points, city.delivery_points, balance, event, district_event_config, orders)
+			if order.is_empty():
+				break
+			next_order_id += 1
+			orders.append(order)
+			event_count += 1
+	for order: Dictionary in orders:
+		DistrictEventRules.publish_order_fields(order, _solo_elapsed_seconds, state == "playing", district_event_config)
 	hud.set_orders(orders)
+
 
 func _accept_order(order_id: int) -> void :
 	if state != "playing":
@@ -296,6 +406,11 @@ func _accept_order(order_id: int) -> void :
 	for i in range(orders.size()):
 		if int(orders[i]["id"]) != order_id:
 			continue
+		if not DistrictEventRules.can_accept(orders[i], _district_event_view()):
+			orders.remove_at(i)
+			hud.notify("Обеденный час завершен. Выберите другой заказ.")
+			_fill_orders()
+			return
 		if int(profile["level"]) < int(orders[i].get("required_level", 1)):
 			hud.notify("Этот тип заказа доступен с уровня %d." % int(orders[i]["required_level"]))
 			return
@@ -369,9 +484,16 @@ func _complete_delivery() -> void :
 		profile["express_deliveries"] = int(profile["express_deliveries"]) + 1
 	elif completed["type"] == "fragile":
 		money += FragileRules.quality_bonus(completed)
+	var event_bonus: int = DistrictEventRules.bonus_for_delivery(completed, money, _solo_elapsed_seconds, district_event_config)
+	money += event_bonus
+	if DistrictEventRules.is_event_order(completed):
+		_solo_event_delivered += 1
+		_solo_event_bonus_money += event_bonus
+		shift_stats["event_deliveries"] = int(shift_stats.get("event_deliveries", 0)) + 1
+		shift_stats["event_bonus_money"] = int(shift_stats.get("event_bonus_money", 0)) + event_bonus
 	var previous_level: int = int(profile["level"])
-	profile["money"] = int(profile["money"]) + money
-	profile["xp"] = int(profile["xp"]) + xp
+	profile["money"] = mini(CheatCodeRules.MAX_PROFILE_VALUE, int(profile["money"]) + money)
+	profile["xp"] = mini(CheatCodeRules.MAX_PROFILE_VALUE, int(profile["xp"]) + xp)
 	profile["total_deliveries"] = int(profile["total_deliveries"]) + 1
 	profile["total_money_earned"] = int(profile["total_money_earned"]) + money
 	profile["level"] = _level_for_xp(int(profile["xp"]))
@@ -387,7 +509,8 @@ func _complete_delivery() -> void :
 	_play_sound("delivery")
 	if int(profile["level"]) > previous_level:
 		_play_sound("level_up")
-	hud.notify("Доставка завершена! +%d ₽ · +%d XP%s" % [money, xp, 
+	var event_notice: String = " · Бонус обеденного часа +%d ₽" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
+	hud.notify("Доставка завершена! +%d ₽ · +%d XP%s%s" % [money, xp, event_notice,
 		" · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""])
 	if not saved:
 		hud.notify("Доставка засчитана, но файл прогресса не удалось записать.")
@@ -435,8 +558,16 @@ func _update_hud() -> void :
 	var route_data: Dictionary = navigation.guidance(player.global_position, _target_position(), route_key, _active_vehicle_name())
 	if not active_order.is_empty():
 		distance = float(route_data.get("distance", 0.0))
+	var handoffs: Dictionary = _handoff_view()
+	if not handoffs.get("incoming", []).is_empty() and not player.is_riding():
+		interaction = "Tab — друг предлагает посылку · подтвердите передачу"
+	elif not _handoff_candidates().is_empty():
+		interaction += " · Tab — передать другу"
 	var pose: Dictionary = player.get_network_pose()
 	hud.update_hud({
+		"team": _network_team, "handoffs": handoffs,
+		"district_event": _district_event_view(), "order_event": _order_event_view(),
+		"handoff_candidates": _handoff_candidates(),
 		"navigation": route_data, "player_yaw": float(pose.get("yaw", 0.0)),
 		"money": int(profile["money"]), "xp": int(profile["xp"]), "level": int(profile["level"]), 
 		"rank": str(profile["rank"]), "shift_remaining": shift_remaining, 
@@ -455,18 +586,21 @@ func _update_hud() -> void :
 	})
 
 func _open_orders() -> void :
-	if state != "playing":
+	if state != "playing" or modal in ["cheats", "customization", "settings"]:
 		return
 	hud.show_map(false)
 	hud.hide_garage()
 	modal = "orders"
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
+	if not _lan_active():
+		for order: Dictionary in orders:
+			DistrictEventRules.publish_order_fields(order, _solo_elapsed_seconds, state == "playing", district_event_config)
 	hud.set_orders(orders)
 	hud.show_orders(true)
 
 func _open_map() -> void :
-	if state != "playing":
+	if state != "playing" or modal in ["cheats", "customization", "settings"]:
 		return
 	hud.show_orders(false)
 	hud.hide_garage()
@@ -477,9 +611,12 @@ func _open_map() -> void :
 	hud.show_map(true, player.global_position, _target_position())
 
 func _close_modal() -> void :
+	_dismiss_cheats()
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
+	hud.hide_customization()
+	_customization_return_modal = ""
 	modal = ""
 	if state == "playing":
 		hud.show_game()
@@ -489,9 +626,12 @@ func _close_modal() -> void :
 func _pause() -> void :
 	if state != "playing":
 		return
+	_dismiss_cheats()
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
+	hud.hide_customization()
+	_customization_return_modal = ""
 	modal = ""
 	state = "paused"
 	_set_gameplay_controls(false)
@@ -499,7 +639,7 @@ func _pause() -> void :
 	hud.show_pause(profile)
 
 func _resume() -> void :
-	if state != "paused" or modal == "settings":
+	if state != "paused" or not modal.is_empty():
 		return
 	state = "playing"
 	hud.show_game()
@@ -508,7 +648,12 @@ func _resume() -> void :
 
 func _end_shift() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	state = "results"
+	_solo_event_phase = "ended"
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]):
+			orders.remove_at(index)
 	modal = ""
 	shift_stats["time_used"] = float(balance.get("shift_seconds", 900)) - shift_remaining
 	_record_best_shift()
@@ -519,7 +664,9 @@ func _end_shift() -> void :
 	city.clear_objective()
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
-	hud.show_results(shift_stats)
+	var results: Dictionary = shift_stats.duplicate(true)
+	results["district_event"] = _district_event_view()
+	hud.show_results(results)
 
 func _record_best_shift() -> void :
 	profile["best_shift"] = maxi(int(profile["best_shift"]), int(shift_stats.get("money", 0)))
@@ -527,6 +674,7 @@ func _record_best_shift() -> void :
 
 func _quit_game() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	if not profile.is_empty():
 		_record_best_shift()
 	if _lan_active():
@@ -536,6 +684,8 @@ func _quit_game() -> void :
 
 
 func _open_settings() -> void :
+	if modal in ["cheats", "customization"]:
+		return
 	if state == "playing":
 		_pause()
 	if state not in ["menu", "paused"] or modal == "settings":
@@ -610,7 +760,8 @@ func _dismiss_settings() -> void :
 func _default_profile() -> Dictionary:
 	return {"version": 1, "player_name": "Courier", "money": 0, "xp": 0, "level": 1, 
 		"rank": "Rookie Courier", "total_deliveries": 0, "express_deliveries": 0, 
-		"total_money_earned": 0, "best_shift": 0, "owned_vehicles": [], "selected_vehicle": ""}
+		"total_money_earned": 0, "best_shift": 0, "owned_vehicles": [], "selected_vehicle": "",
+		"appearance": CosmeticCatalog.default_appearance(), "owned_cosmetics": []}
 
 func _load_balance() -> Dictionary:
 	var file: = FileAccess.open("res://assets/balance.json", FileAccess.READ)
@@ -645,15 +796,17 @@ func _load_profile() -> Dictionary:
 		if not (value is int or value is float) or not is_finite(float(value)) or float(value) < 0.0:
 			load_notice = "Профиль содержит неверные данные. Загружены безопасные значения."
 			continue
-		result[key] = clampi(int(value), 0, 1000000000)
+		result[key] = int(minf(float(value), float(CheatCodeRules.MAX_PROFILE_VALUE)))
 	if parsed.get("player_name", "Courier") is String:
 		result["player_name"] = _clean_player_name(str(parsed.get("player_name", "Courier")))
 	result["level"] = _level_for_xp(int(result["xp"]))
 	result["rank"] = _rank_for_level(int(result["level"]))
 	result.merge(VehicleCatalogScript.sanitize_profile_vehicles(parsed), true)
+	result.merge(CosmeticCatalog.sanitize_profile(parsed), true)
 	return result
 
 func _save_profile() -> bool:
+	profile.merge(CosmeticCatalog.sanitize_profile(profile), true)
 	if test_mode:
 		return true
 	var temporary: String = SAVE_PATH + ".tmp"
@@ -756,12 +909,171 @@ func _nearest_vehicle_owner() -> int:
 	return nearest
 
 
+func _can_use_cheats() -> bool:
+	if not _lan_active():
+		return state in ["menu", "playing", "paused"]
+	return state in ["playing", "paused"] and lan_session.phase == "playing"
+
+
+func _open_cheats() -> void:
+	if modal == "cheats":
+		return
+	if not _can_use_cheats():
+		hud.notify("Чит-коды доступны в профиле перед подключением и во время активной смены.")
+		return
+	if modal == "settings" or (settings_service != null and settings_service.has_pending_preview()):
+		hud.notify("Сначала закройте настройки и подтвердите или отмените изменения экрана.")
+		return
+	_cheat_return_modal = modal
+	_cheat_return_customization_modal = _customization_return_modal
+	hud.show_orders(false)
+	hud.show_map(false)
+	hud.hide_garage()
+	hud.hide_customization()
+	modal = "cheats"
+	_set_gameplay_controls(false)
+	player.set_mouse_captured(false)
+	hud.show_cheats(profile)
+
+
+func _close_cheats() -> void:
+	if modal != "cheats":
+		return
+	var previous_modal: String = _cheat_return_modal
+	var previous_customization_modal: String = _cheat_return_customization_modal
+	_dismiss_cheats()
+	if previous_modal == "customization" and _can_edit_cosmetics():
+		modal = "customization"
+		_customization_return_modal = previous_customization_modal
+		hud.show_customization(profile, cosmetic_defs)
+	elif state == "menu":
+		hud.show_menu(profile)
+	elif state == "paused":
+		hud.show_pause(profile)
+	elif state == "playing":
+		if previous_modal == "garage" and not player.is_riding() and _near_garage():
+			_open_garage()
+		elif previous_modal == "orders":
+			_open_orders()
+		elif previous_modal == "map":
+			_open_map()
+		else:
+			_close_modal()
+
+
+func _dismiss_cheats() -> void:
+	if hud != null:
+		hud.hide_cheats()
+	if modal == "cheats":
+		modal = ""
+	_cheat_return_modal = ""
+	_cheat_return_customization_modal = ""
+
+
+func _submit_cheat_code(raw_code: String) -> void:
+	if modal != "cheats" or not _can_use_cheats():
+		return
+	if _lan_active():
+		if CheatCodeRules.normalize_code(raw_code).is_empty():
+			hud.set_cheat_notice("Введите код длиной от 1 до 64 символов без переносов строк.", true)
+			return
+		hud.set_cheat_notice("Код отправлен Host…")
+		# Clients submit only a bounded code; amounts and targets are never sent.
+		lan_session.request_action("cheat_code", {"code": raw_code})
+		return
+	var previous_level: int = int(profile.get("level", 1))
+	var step: int = maxi(1, int(balance.get("level_xp_step", 150)))
+	var result: Dictionary = CheatCodeRules.apply(profile, raw_code, step)
+	if bool(result.get("changed", false)):
+		var saved: bool = _save_profile()
+		hud.update_cheats_profile(profile)
+		if int(profile["level"]) > previous_level:
+			_play_sound("level_up")
+		if state in ["playing", "paused"]:
+			_update_hud()
+		if not saved:
+			result["message"] = str(result.get("message", "")) + " Профиль не удалось записать: проверьте папку сохранений."
+	hud.set_cheat_notice(str(result.get("message", "")), not bool(result.get("ok", false)))
+
+
+func _can_edit_cosmetics() -> bool:
+	if not _lan_active() and state == "menu":
+		return true
+	return state in ["playing", "paused"] and not player.is_riding() and _near_garage() and (not _lan_active() or lan_session.phase == "playing")
+
+
+func _open_customization() -> void:
+	if modal in ["cheats", "settings"]:
+		return
+	if not _can_edit_cosmetics():
+		hud.notify("Стиль доступен в профиле перед подключением или в гараже пешком.")
+		return
+	_customization_return_modal = modal
+	modal = "customization"
+	_set_gameplay_controls(false)
+	player.set_mouse_captured(false)
+	hud.show_customization(profile, cosmetic_defs)
+
+
+func _close_customization() -> void:
+	if modal != "customization":
+		return
+	hud.hide_customization()
+	var previous_modal: String = _customization_return_modal
+	_customization_return_modal = ""
+	modal = ""
+	if state == "menu":
+		hud.show_menu(profile)
+	elif state == "paused":
+		hud.show_pause(profile)
+	elif state == "playing" and previous_modal == "garage" and _near_garage() and not player.is_riding():
+		_open_garage()
+	elif state == "playing":
+		_close_modal()
+
+
+func _buy_cosmetic(category: String, item_id: String) -> void:
+	_cosmetic_action(category, item_id, true)
+
+
+func _select_cosmetic(category: String, item_id: String) -> void:
+	_cosmetic_action(category, item_id, false)
+
+
+func _cosmetic_action(category: String, item_id: String, purchasing: bool) -> void:
+	if modal != "customization" or not _can_edit_cosmetics():
+		return
+	if _lan_active():
+		lan_session.request_action("cosmetic_buy" if purchasing else "cosmetic_select", {"category": category, "id": item_id})
+		return
+	var result: Dictionary = CosmeticCatalog.buy(profile, category, item_id) if purchasing else CosmeticCatalog.select(profile, category, item_id)
+	if bool(result.get("changed", false)):
+		_apply_profile_appearance()
+		var saved: bool = _save_profile()
+		hud.update_customization(profile, cosmetic_defs)
+		if purchasing and bool(result.get("ok", false)) and int(CosmeticCatalog.get_item(category, item_id).get("price", 0)) > 0:
+			_play_sound("purchase")
+		if not saved:
+			result["message"] = str(result.get("message", "")) + " Профиль не удалось записать: проверьте папку сохранений."
+	hud.set_customization_notice(str(result.get("message", "")), not bool(result.get("ok", false)))
+
+
+func _apply_profile_appearance() -> void:
+	var appearance: Dictionary = CosmeticCatalog.sanitize_profile(profile)["appearance"]
+	if player != null and is_instance_valid(player) and player.has_method("apply_appearance"):
+		player.apply_appearance(appearance)
+	var owner_id: int = _local_vehicle_owner() if lan_session != null else 0
+	if vehicles.has(owner_id) and is_instance_valid(vehicles[owner_id]):
+		vehicles[owner_id].apply_appearance(appearance)
+
+
 func _open_garage() -> void :
-	if state != "playing" or player.is_riding() or not _near_garage():
+	if state != "playing" or modal in ["cheats", "customization", "settings"] or player.is_riding() or not _near_garage():
 		return
 	modal = "garage"
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
+	hud.show_game()
 	hud.show_garage(profile, vehicle_defs)
 
 
@@ -919,6 +1231,8 @@ func _upsert_vehicle(owner_id: int, data: Dictionary, force_transform: bool = fa
 	var ids: Array = lan_session.members.keys() if _lan_active() else [0]
 	ids.sort()
 	vehicle.set_network_identity(str(member.get("name", profile.get("player_name", "Courier"))), maxi(0, ids.find(owner_id)))
+	var fallback_appearance: Dictionary = profile.get("appearance", {}) if owner_id == _local_vehicle_owner() else member.get("appearance", {})
+	vehicle.apply_appearance(CosmeticCatalog.normalize_appearance(data.get("appearance", fallback_appearance)))
 	var courier = player if owner_id == _local_vehicle_owner() else remote_players.get(owner_id)
 	if courier != null and is_instance_valid(courier):
 		courier.set_riding_vehicle(vehicle if occupied else null)
@@ -1001,6 +1315,7 @@ func _restart_shift() -> void :
 
 
 func _open_lan_menu() -> void :
+	_dismiss_cheats()
 	state = "network_menu"
 	modal = ""
 	player.set_controls_enabled(false)
@@ -1008,14 +1323,14 @@ func _open_lan_menu() -> void :
 	hud.show_lan_menu(profile)
 
 
-func _host_lan(player_name: String, room_name: String, max_players: int, shift_seconds: int) -> void :
+func _host_lan(player_name: String, room_name: String, max_players: int, shift_seconds: int, shift_mode: String = "competitive") -> void :
 	if _lan_active():
 		return
 	profile["player_name"] = _clean_player_name(player_name)
 	_save_profile()
 	state = "connecting"
 	hud.set_connecting("Создание LAN-комнаты…")
-	var error: int = lan_session.host_game(profile, room_name, max_players, shift_seconds)
+	var error: int = lan_session.host_game(profile, room_name, max_players, shift_seconds, shift_mode)
 	if error != OK:
 		state = "network_menu"
 		hud.show_lan_menu(profile, "Не удалось создать комнату. Возможно, порт 7777 уже занят.")
@@ -1050,12 +1365,17 @@ func _on_lan_lobby(data: Dictionary) -> void :
 	if str(data.get("phase", "lobby")) != "lobby":
 		return
 	lan_authority.stop_session()
+	_dismiss_cheats()
 	state = "lobby"
 	modal = ""
 	active_order.clear()
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_clear_vehicles()
 	city.clear_objective()
 	player.set_carrying(false)
@@ -1069,6 +1389,7 @@ func _on_lan_lobby(data: Dictionary) -> void :
 func _on_lan_started(data: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
 		return
+	_dismiss_cheats()
 	_has_lan_started = true
 	_last_network_revision = -1
 	_last_pose_msec = Time.get_ticks_msec()
@@ -1079,6 +1400,10 @@ func _on_lan_started(data: Dictionary) -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_network_leaderboard.clear()
 	_reset_shift_stats()
 	_clear_vehicles()
@@ -1095,8 +1420,9 @@ func _on_lan_started(data: Dictionary) -> void :
 		if peer_id == lan_session.local_id:
 			player.reset_at(spawn)
 			player.set_network_identity(str(member.get("name", "Courier")), index)
+			player.apply_appearance(CosmeticCatalog.normalize_appearance(member.get("appearance", profile.get("appearance", {}))))
 		else:
-			_spawn_remote_player(peer_id, str(member.get("name", "Courier")), spawn, index)
+			_spawn_remote_player(peer_id, str(member.get("name", "Courier")), spawn, index, CosmeticCatalog.normalize_appearance(member.get("appearance", {})))
 	player.set_view_direction(PI)
 	player.set_controls_enabled(true)
 	player.set_mouse_captured(true)
@@ -1106,7 +1432,7 @@ func _on_lan_started(data: Dictionary) -> void :
 		lan_authority.start_session(data, roster, city, balance, str(data.get("session_id", "")))
 	_update_hud()
 	_open_orders()
-	hud.notify("Общие заказы: кто первым принял, тот и выполняет доставку.")
+	hud.notify("Командная смена: выполняйте общий план. Tab — передать посылку другу рядом." if str(data.get("shift_mode", "competitive")) == "team" else "Общие заказы: кто первым принял, тот и выполняет доставку.")
 
 
 func _on_lan_request(peer_id: int, action: String, payload: Dictionary) -> void :
@@ -1133,6 +1459,19 @@ func _publish_lan_pose(peer_id: int, pose: Dictionary) -> void :
 		lan_session.publish_pose(peer_id, pose)
 
 
+func _order_list_signature(values: Array) -> Array:
+	var signature: Array = []
+	for value: Variant in values:
+		if not value is Dictionary:
+			continue
+		var order: Dictionary = value.duplicate(true)
+		# Countdown changes must not replace focused/scrolling order cards every 500 ms.
+		for key: String in ["event_remaining", "event_bonus_money", "event_bonus_available"]:
+			order.erase(key)
+		signature.append(order)
+	return signature
+
+
 func _on_lan_state(data: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
 		return
@@ -1145,21 +1484,30 @@ func _on_lan_state(data: Dictionary) -> void :
 	var previous_deliveries: int = int(shift_stats.get("deliveries", 0))
 	var previous_level: int = int(profile.get("level", 1))
 	var previous_owned: Array = profile.get("owned_vehicles", []).duplicate()
+	var previous_cosmetics: Array = profile.get("owned_cosmetics", []).duplicate()
 	_last_network_revision = revision
 	var prior_order: Dictionary = active_order.duplicate(true)
 	var confirmed: Dictionary = data.get("profile", {})
 	var profile_changed: bool = not confirmed.is_empty() and confirmed != profile
 	if profile_changed:
 		profile = confirmed.duplicate(true)
+		profile.merge(CosmeticCatalog.sanitize_profile(profile), true)
+		_apply_profile_appearance()
 		if not _save_profile():
 			hud.notify("Награда подтверждена, но файл профиля не удалось записать.")
 	shift_stats = data.get("shift_stats", {}).duplicate(true)
+	_network_team = data.get("team", {}).duplicate(true)
+	_network_handoffs = data.get("handoffs", {}).duplicate(true)
+	_network_district_event = data.get("district_event", {}).duplicate(true)
+	_network_order_event = data.get("order_event", {}).duplicate(true)
 	var received_orders: Array = data.get("orders", [])
-	var orders_changed: bool = orders != received_orders
+	var orders_changed: bool = _order_list_signature(orders) != _order_list_signature(received_orders)
 	orders.assign(received_orders)
 	active_order = data.get("active_order", {}).duplicate(true)
 	if had_snapshot:
 		_play_confirmed_lan_audio(prior_order, previous_deliveries, previous_level, previous_owned)
+		if previous_cosmetics.size() < profile.get("owned_cosmetics", []).size():
+			_play_sound("purchase")
 	_snapshot_time_msec = Time.get_ticks_msec()
 	_snapshot_remaining = float(data.get("remaining", 900.0))
 	_snapshot_order_remaining = float(active_order.get("remaining", 0.0))
@@ -1172,6 +1520,10 @@ func _on_lan_state(data: Dictionary) -> void :
 	player.set_carrying(carrying)
 	if profile_changed and modal == "garage":
 		hud.update_garage(profile, vehicle_defs)
+	elif profile_changed and modal == "customization":
+		hud.update_customization(profile, cosmetic_defs)
+	elif profile_changed and modal == "cheats":
+		hud.update_cheats_profile(profile)
 	if prior_order.get("id", -1) != active_order.get("id", -1) or prior_order.get("state", "") != active_order.get("state", ""):
 		city.clear_objective()
 		if not active_order.is_empty():
@@ -1186,6 +1538,7 @@ func _on_lan_state(data: Dictionary) -> void :
 	_update_hud()
 	if str(data.get("phase", "playing")) == "results":
 		_dismiss_settings()
+		_dismiss_cheats()
 		lan_session.phase = "results"
 		state = "results"
 		modal = ""
@@ -1193,6 +1546,8 @@ func _on_lan_state(data: Dictionary) -> void :
 		player.set_mouse_captured(false)
 		var results: Dictionary = shift_stats.duplicate(true)
 		results["leaderboard"] = _network_leaderboard
+		results["team"] = _network_team.duplicate(true)
+		results["district_event"] = _network_district_event.duplicate(true)
 		hud.show_results(results)
 
 
@@ -1206,12 +1561,12 @@ func _play_confirmed_lan_audio(prior_order: Dictionary, previous_deliveries: int
 	var same_order: bool = not active_order.is_empty() and int(prior_order.get("id", -1)) == int(active_order.get("id", -2))
 	if active_order.get("state", "") == "Accepted" and not same_order:
 		_play_sound("order_accept")
-	elif same_order and prior_order.get("state", "") != "PickedUp" and active_order.get("state", "") == "PickedUp":
+	elif active_order.get("state", "") == "PickedUp" and (not same_order or prior_order.get("state", "") != "PickedUp"):
 		_play_sound("pickup")
 	if int(shift_stats.get("deliveries", 0)) > previous_deliveries:
 		_play_sound("delivery")
-		if int(profile.get("level", 1)) > previous_level:
-			_play_sound("level_up")
+	if int(profile.get("level", 1)) > previous_level:
+		_play_sound("level_up")
 	for owned: Variant in profile.get("owned_vehicles", []):
 		if not previous_owned.has(owned):
 			_play_sound("purchase")
@@ -1220,6 +1575,8 @@ func _play_confirmed_lan_audio(prior_order: Dictionary, previous_deliveries: int
 
 func _on_lan_event(event: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
+		return
+	if event.has("session_id") and str(event["session_id"]) != lan_session.session_id:
 		return
 	if str(event.get("type", "notice")) == "vehicle_state":
 		var vehicle_data: Variant = event.get("vehicle", {})
@@ -1235,6 +1592,16 @@ func _on_lan_event(event: Dictionary) -> void :
 		var position_value: Variant = event.get("position")
 		if position_value is Vector3:
 			player.correct_network_position(position_value)
+	elif str(event.get("type", "")) == "cheat_result":
+		if modal == "cheats":
+			hud.set_cheat_notice(str(event.get("message", "")), not bool(event.get("ok", false)))
+		else:
+			hud.notify(str(event.get("message", "")))
+	elif str(event.get("type", "")) == "cosmetic_result":
+		if modal == "customization":
+			hud.set_customization_notice(str(event.get("message", "")), not bool(event.get("ok", false)))
+		else:
+			hud.notify(str(event.get("message", "")))
 	elif event.get("message", "") is String:
 		hud.notify(str(event.get("message", "")))
 
@@ -1251,7 +1618,7 @@ func _on_lan_message(message: String) -> void :
 		hud.notify(message)
 
 
-func _spawn_remote_player(peer_id: int, display_name: String, position_value: Vector3, color_index: int) -> void :
+func _spawn_remote_player(peer_id: int, display_name: String, position_value: Vector3, color_index: int, appearance: Dictionary = {}) -> void :
 	if peer_id <= 0 or peer_id == lan_session.local_id or remote_players.has(peer_id):
 		return
 	var avatar = PlayerScript.new()
@@ -1259,6 +1626,7 @@ func _spawn_remote_player(peer_id: int, display_name: String, position_value: Ve
 	avatar.configure_remote(display_name, color_index)
 	add_child(avatar)
 	avatar.reset_at(position_value)
+	avatar.apply_appearance(CosmeticCatalog.normalize_appearance(appearance))
 	avatar.apply_network_pose({"position": position_value, "yaw": PI, "velocity": Vector3.ZERO, "grounded": true, "carrying": false})
 	remote_players[peer_id] = avatar
 
@@ -1273,6 +1641,7 @@ func _sync_remote_roster(roster: Array) -> void :
 		present[peer_id] = true
 		_spawn_remote_player(peer_id, str(record.get("name", "Courier")), record.get("position", city.spawn_position), index)
 		if remote_players.has(peer_id):
+			remote_players[peer_id].apply_appearance(CosmeticCatalog.normalize_appearance(record.get("appearance", {})))
 			remote_players[peer_id].set_carrying(bool(record.get("carrying", false)))
 	for peer_id in remote_players.keys():
 		if not present.has(peer_id):
@@ -1357,6 +1726,7 @@ func _on_lan_disconnected(reason: String) -> void :
 
 func _return_to_main_menu() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	state = "menu"
 	modal = ""
 	_has_lan_started = false
@@ -1365,15 +1735,78 @@ func _return_to_main_menu() -> void :
 	if navigation != null:
 		navigation.clear()
 	orders.clear()
+	_network_team.clear()
+	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_network_leaderboard.clear()
 	_clear_vehicles()
 	_clear_remote_players()
 	city.clear_objective()
 	player.set_carrying(false)
 	player.set_network_identity("", 0)
+	_apply_profile_appearance()
 	player.reset_at(city.spawn_position)
 	player.set_view_direction(PI)
 	player.set_controls_enabled(false)
 	player.set_mouse_captured(false)
 	hud.set_network_mode(false, false)
 	hud.show_menu(profile)
+
+func _handoff_view() -> Dictionary:
+	if not _lan_active() or not bool(_network_team.get("enabled", false)):
+		return {"incoming": [], "outgoing": {}}
+	var view: Dictionary = _network_handoffs.duplicate(true)
+	var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+	var incoming: Array = []
+	for offer: Dictionary in view.get("incoming", []):
+		offer["remaining"] = maxf(0.0, float(offer.get("remaining", 0.0)) - elapsed)
+		if float(offer["remaining"]) > 0.0:
+			incoming.append(offer)
+	view["incoming"] = incoming
+	var outgoing: Dictionary = view.get("outgoing", {})
+	if not outgoing.is_empty():
+		outgoing["remaining"] = maxf(0.0, float(outgoing.get("remaining", 0.0)) - elapsed)
+		if float(outgoing["remaining"]) <= 0.0:
+			outgoing = {}
+	view["outgoing"] = outgoing
+	return view
+
+
+func _handoff_candidates() -> Array:
+	var candidates: Array = []
+	if not _lan_active() or not bool(_network_team.get("enabled", false)) or player.is_riding() or active_order.get("state", "") != "PickedUp":
+		return candidates
+	for member: Dictionary in _network_players:
+		var peer_id: int = int(member.get("id", 0))
+		if peer_id == lan_session.local_id or not bool(member.get("connected", false)) or bool(member.get("has_order", true)):
+			continue
+		if str(member.get("active_vehicle", "walking")) != "walking":
+			continue
+		var position: Vector3 = member.get("position", Vector3.INF)
+		if player.global_position.distance_to(position) <= 3.2:
+			candidates.append({"id": peer_id, "name": str(member.get("name", "Курьер"))})
+	return candidates
+
+
+func _request_handoff(action: String, payload: Dictionary = {}) -> void:
+	if state != "playing" or not _lan_active() or not bool(_network_team.get("enabled", false)):
+		return
+	lan_session.send_pose(_network_pose())
+	lan_session.request_action(action, payload)
+
+
+func _offer_handoff(target_id: int) -> void:
+	_request_handoff("offer_handoff", {"target_id": target_id})
+
+
+func _accept_handoff(sender_id: int, offer_id: int) -> void:
+	_request_handoff("accept_handoff", {"sender_id": sender_id, "offer_id": offer_id})
+
+
+func _decline_handoff(sender_id: int, offer_id: int) -> void:
+	_request_handoff("decline_handoff", {"sender_id": sender_id, "offer_id": offer_id})
+
+
+func _cancel_handoff() -> void:
+	_request_handoff("cancel_handoff")

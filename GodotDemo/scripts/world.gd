@@ -1,6 +1,7 @@
 extends Node3D
 
 const RoundedGeometry = preload("res://scripts/rounded_geometry.gd")
+const CityLayout = preload("res://scripts/city_layout.gd")
 
 
 
@@ -19,8 +20,12 @@ var _map_roads: Array[Rect2] = []
 var _map_paths: Array[Rect2] = []
 var _map_obstacles: Array[Rect2] = []
 var _map_buildings: Array[Dictionary] = []
+var _extension_windows: bool = false
+var _extension_pickups: Array[Dictionary] = []
+var _extension_deliveries: Array[Dictionary] = []
+var _map_fountains: Array[Dictionary] = []
 
-const SIZE: float = 172.0
+const SIZE: float = CityLayout.SIZE
 const GRASS: = Color("9ac47a")
 const ROAD: = Color("535f6c")
 const SIDEWALK: = Color("e9dfc7")
@@ -37,7 +42,9 @@ func _ready() -> void :
 	_make_lighting()
 	_make_ground_and_roads()
 	_make_city()
+	_make_expanded_city()
 	_make_park()
+	_make_large_parks()
 	_make_street_details()
 	_make_delivery_points()
 	_batch_static_geometry()
@@ -119,37 +126,418 @@ func _make_lighting() -> void :
 	add_child(sunlight)
 
 
-func _make_ground_and_roads() -> void :
+func _make_ground_and_roads() -> void:
 	_box(self, Vector3(0, -0.3, 0), Vector3(SIZE, 0.6, SIZE), _material("grass", GRASS), true)
-	var pavement: = _material("sidewalk", SIDEWALK)
-	var asphalt: = _material("road", ROAD)
-	var markings: = _material("road_markings", CREAM)
-	for road_position in [-40.0, 0.0, 40.0]:
-		_box(self, Vector3(road_position, 0.013, 0), Vector3(14, 0.025, 169), pavement)
-		_box(self, Vector3(0, 0.013, road_position), Vector3(169, 0.025, 14), pavement)
-	for road_position in [-40.0, 0.0, 40.0]:
-		_box(self, Vector3(road_position, 0.035, 0), Vector3(9, 0.03, 169), asphalt)
-		_box(self, Vector3(0, 0.037, road_position), Vector3(169, 0.03, 9), asphalt)
-		for dash_index in range(-10, 11):
-			var distance_value: float = float(dash_index) * 8.0
-			if absf(distance_value) < 7 or absf(absf(distance_value) - 40) < 7:
+	var pavement: Material = _material("sidewalk", SIDEWALK)
+	var asphalt: Material = _material("road", ROAD)
+	var markings: Material = _material("road_markings", CREAM)
+	# Keep the twenty original buildings. Perimeter streets use +/-84m rather
+	# than +/-80m so they do not cross the old houses and flower shop.
+	for axis in CityLayout.ROAD_AXES:
+		for vertical in [true, false]:
+			for segment in _road_segments(axis, vertical):
+				var length_value: float = segment.y - segment.x
+				var midpoint: float = (segment.x + segment.y) * 0.5
+				var location: Vector3 = Vector3(axis, 0.013, midpoint) if vertical else Vector3(midpoint, 0.013, axis)
+				var size_value: Vector3 = Vector3(14, 0.025, length_value) if vertical else Vector3(length_value, 0.025, 14)
+				_box(self, location, size_value, pavement)
+	for axis in CityLayout.ROAD_AXES:
+		for vertical in [true, false]:
+			for segment in _road_segments(axis, vertical):
+				var length_value: float = segment.y - segment.x
+				var midpoint: float = (segment.x + segment.y) * 0.5
+				var location: Vector3 = Vector3(axis, 0.035, midpoint) if vertical else Vector3(midpoint, 0.037, axis)
+				var size_value: Vector3 = Vector3(9, 0.03, length_value) if vertical else Vector3(length_value, 0.03, 9)
+				_box(self, location, size_value, asphalt)
+				for dash_index in range(-31, 32):
+					var along: float = float(dash_index) * 8.0
+					if along < segment.x + 2.0 or along > segment.y - 2.0 or _at_junction(along):
+						continue
+					location = Vector3(axis, 0.066, along) if vertical else Vector3(along, 0.068, axis)
+					size_value = Vector3(0.16, 0.025, 3.2) if vertical else Vector3(3.2, 0.025, 0.16)
+					_box(self, location, size_value, markings)
+	for junction_x in CityLayout.ROAD_AXES:
+		for junction_z in CityLayout.ROAD_AXES:
+			if not _is_road(Vector2(junction_x, junction_z)):
 				continue
-			_box(self, Vector3(road_position, 0.066, distance_value), Vector3(0.16, 0.025, 3.2), markings)
-			_box(self, Vector3(distance_value, 0.068, road_position), Vector3(3.2, 0.025, 0.16), markings)
-	for junction_x in [-40.0, 0.0, 40.0]:
-		for junction_z in [-40.0, 0.0, 40.0]:
 			for stripe_index in range(5):
 				var stripe_x: float = junction_x - 3.4 + float(stripe_index) * 1.7
-				_box(self, Vector3(stripe_x, 0.075, junction_z + 7.5), Vector3(0.75, 0.025, 2.2), markings)
-
-	var hedge_material: = _material("boundary_hedge", Color("5b945d"))
-	for axis in [0, 1]:
+				if _is_road(Vector2(stripe_x, junction_z + 7.5)):
+					_box(self, Vector3(stripe_x, 0.075, junction_z + 7.5), Vector3(0.75, 0.025, 2.2), markings)
+	var hedge_material: Material = _material("boundary_hedge", Color("5b945d"))
+	for axis_index in [0, 1]:
 		for sign_value in [-1.0, 1.0]:
-			var location: = Vector3(sign_value * 85, 0.8, 0) if axis == 0 else Vector3(0, 0.8, sign_value * 85)
-			var dimensions: = Vector3(1.6, 1.6, 172) if axis == 0 else Vector3(172, 1.6, 1.6)
+			var location: Vector3 = Vector3(sign_value * 257.1, 0.8, 0) if axis_index == 0 else Vector3(0, 0.8, sign_value * 257.1)
+			var dimensions: Vector3 = Vector3(1.6, 1.6, SIZE) if axis_index == 0 else Vector3(SIZE, 1.6, 1.6)
 			_rounded_box(self, location, dimensions, hedge_material, 0.45)
-			var wall_dimensions: = Vector3(1.6, 7, 172) if axis == 0 else Vector3(172, 7, 1.6)
+			var wall_dimensions: Vector3 = Vector3(1.6, 7, SIZE) if axis_index == 0 else Vector3(SIZE, 7, 1.6)
 			_static_box(location + Vector3(0, 2.7, 0), wall_dimensions)
+
+
+func _road_segments(axis: float, vertical: bool) -> Array[Vector2]:
+	var result: Array[Vector2] = [Vector2(-256.5, 256.5)]
+	# Interior roads end at perimeter-road centrelines, leaving large parks
+	# continuous while their edges remain connected to the street network.
+	for park_gap in [Rect2(-240, -240, 156, 156), Rect2(84, 120, 156, 120)]:
+		var across_min: float = park_gap.position.x if vertical else park_gap.position.y
+		var across_max: float = park_gap.end.x if vertical else park_gap.end.y
+		if axis <= across_min or axis >= across_max:
+			continue
+		var gap_min: float = park_gap.position.y if vertical else park_gap.position.x
+		var gap_max: float = park_gap.end.y if vertical else park_gap.end.x
+		var next: Array[Vector2] = []
+		for segment in result:
+			if gap_max <= segment.x or gap_min >= segment.y:
+				next.append(segment)
+				continue
+			if gap_min > segment.x:
+				next.append(Vector2(segment.x, gap_min))
+			if gap_max < segment.y:
+				next.append(Vector2(gap_max, segment.y))
+		result = next
+	return result
+
+
+func _at_junction(along: float) -> bool:
+	for axis in CityLayout.ROAD_AXES:
+		if absf(along - axis) < 7.0:
+			return true
+	return false
+
+
+func _is_road(flat: Vector2) -> bool:
+	for rect in _map_roads:
+		if rect.has_point(flat):
+			return true
+	return false
+
+
+func _make_expanded_city() -> void:
+	_extension_windows = true
+	for definition in CityLayout.get_extension_buildings():
+		var location: Vector3 = definition["position"]
+		var dimensions: Vector3 = definition["size"]
+		var kind: String = str(definition["kind"])
+		var name_value: String = str(definition["name"])
+		if kind == "house":
+			_house(name_value, location, definition["color"])
+		elif kind == "shop":
+			_shop(name_value, location, dimensions, definition["color"], str(definition["sign"]), TEAL if definition["district"] != "industrial" else ORANGE)
+		else:
+			var building: Node3D = _building(name_value, location, dimensions, definition["color"], false, kind == "warehouse")
+			if kind == "warehouse":
+				_roller_door(building, Vector3(-3.8, 2.05, -dimensions.z * 0.5 - 0.03), 9.0, 4.0)
+				_door(building, Vector3(8.0, 0, -dimensions.z * 0.5 - 0.03), true)
+				_facade_label(building, name_value, Vector3(0, dimensions.y - 1.6, -dimensions.z * 0.5 - 0.4), 0.010, CREAM, 42)
+				for parcel_x in [-10.0, -8.5]:
+					_parcel(location + Vector3(parcel_x, 0, -dimensions.z * 0.5 - 2.3))
+				_rounded_box(building, Vector3(dimensions.x * 0.35, dimensions.y + 0.7, 0), Vector3(2.3, 1.4, 3.5), _material("warehouse_ac", Color("8d9da5")), 0.12)
+			elif kind == "apartment":
+				for balcony_floor in range(1, mini(4, maxi(2, int(dimensions.y / 4.0)))):
+					for side in [-1.0, 1.0]:
+						_balcony(building, Vector3(side * 7.5, 3.9 + float(balcony_floor - 1) * 3.8, -dimensions.z * 0.5 - 0.3))
+				_facade_label(building, "№ " + str(definition["id"]).get_slice("_", 1), Vector3(3.5, 2.0, -dimensions.z * 0.5 - 0.3), 0.010, CREAM, 42)
+				_bin(location + Vector3(dimensions.x * 0.5 - 1.5, 0, -dimensions.z * 0.5 - 1.3), true)
+			elif kind == "office":
+				_office_crown(building, dimensions, name_value)
+			else:
+				_facade_label(building, name_value, Vector3(0, dimensions.y - 1.3, -dimensions.z * 0.5 - 0.35), 0.010, DARK, 42)
+				for post_x in [-dimensions.x * 0.40, dimensions.x * 0.40]:
+					_rounded_box(building, Vector3(post_x, 2.2, -dimensions.z * 0.5 - 0.12), Vector3(0.5, 4.2, 0.5), _material("civic_columns", CREAM), 0.12)
+		# Footprints and district identities come from this exact built geometry.
+		if not _map_buildings.is_empty():
+			_map_buildings[-1]["id"] = str(definition["id"])
+			_map_buildings[-1]["kind"] = kind
+			_map_buildings[-1]["district"] = str(definition["district"])
+			_map_buildings[-1]["height"] = dimensions.y
+		var front: float = -dimensions.z * 0.5 - 3.0
+		var point_position: Vector3 = location + Vector3(0, 0, front)
+		var connection_z: float = _nearest_road_axis(point_position.z)
+		var path_length: float = absf(point_position.z - connection_z)
+		if path_length > 0.01:
+			_box(self, Vector3(point_position.x, 0.025, (point_position.z + connection_z) * 0.5), Vector3(2.8, 0.03, path_length), _material("door_path", Color("d9caae")))
+		_box(self, location + Vector3(0, 0.025, -dimensions.z * 0.5 - 1.8), Vector3(minf(18, dimensions.x), 0.03, 3.6), _material("forecourt", Color("ead4ac")))
+		if bool(definition["pickup"]):
+			var pickup_position: Vector3 = point_position + Vector3(-4.0 if bool(definition["delivery"]) else 0.0, 0, 0)
+			_extension_pickups.append({"id": "pickup_" + str(definition["id"]), "name": name_value, "position": pickup_position, "district": str(definition["district"])})
+		if bool(definition["delivery"]):
+			var delivery_position: Vector3 = point_position + Vector3(4.0 if bool(definition["pickup"]) else 0.0, 0, 0)
+			_extension_deliveries.append({"id": "delivery_" + str(definition["id"]), "name": "Дом на Садовой " + name_value.trim_prefix("House ") if kind == "house" else name_value, "position": delivery_position, "district": str(definition["district"])})
+	_extension_windows = false
+	_make_district_forecourts()
+	_make_extended_street_details()
+
+
+func _office_crown(building: Node3D, dimensions: Vector3, title: String) -> void:
+	var trim: Material = _material("office_trim", Color("536d7a"))
+	for floor_band in range(1, mini(8, maxi(2, int(dimensions.y / 4.0)))):
+		var y_value: float = float(floor_band) * dimensions.y / float(mini(8, maxi(2, int(dimensions.y / 4.0))))
+		_rounded_box(building, Vector3(0, y_value, -dimensions.z * 0.5 - 0.05), Vector3(dimensions.x + 0.18, 0.18, 0.25), trim, 0.04)
+		_rounded_box(building, Vector3(0, y_value, dimensions.z * 0.5 + 0.05), Vector3(dimensions.x + 0.18, 0.18, 0.25), trim, 0.04)
+	var canopy: MeshInstance3D = _rounded_box(building, Vector3(0, 3.6, -dimensions.z * 0.5 - 1.2), Vector3(6.5, 0.25, 2.9), _material("office_canopy", TEAL), 0.11)
+	canopy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_facade_label(building, title, Vector3(0, dimensions.y - 1.8, -dimensions.z * 0.5 - 0.35), 0.014, DARK, 48)
+	_rounded_box(building, Vector3(0, dimensions.y + 0.9, 0), Vector3(dimensions.x * 0.45, 1.5, dimensions.z * 0.4), _material("office_roof", Color("788e99")), 0.18)
+	_cylinder(building, Vector3(0, dimensions.y + 3.8, 0), 0.07, 0.1, 5.0, _material("metal", DARK), 12)
+	for post_x in [-2.7, 2.7]:
+		_cylinder(building, Vector3(post_x, 1.7, -dimensions.z * 0.5 - 2.2), 0.07, 0.08, 3.4, _material("metal", DARK), 12)
+
+
+func _extension_window(parent: Node3D, location: Vector3, width: float, height: float, yaw: float, variation: int) -> void:
+	# Fewer meshes on the new district façades; the original detailed windows stay.
+	var window: Node3D = Node3D.new()
+	window.name = "DistrictWindow"
+	window.position = location
+	window.rotation.y = yaw
+	parent.add_child(window)
+	_rounded_box(window, Vector3(0, 0, -0.08), Vector3(width + 0.26, height + 0.26, 0.18), _material("window_frame", CREAM), 0.07)
+	_rounded_box(window, Vector3(0, 0, -0.19), Vector3(width, height, 0.045), _material("district_glass_" + str(variation == 4), Color("7baebe") if variation != 4 else Color("dbcda9")), 0.024)
+	_box(window, Vector3(0, 0, -0.23), Vector3(0.07, height, 0.035), _material("window_frame", CREAM))
+
+
+func _nearest_road_axis(value: float) -> float:
+	var nearest: float = 0.0
+	var distance_value: float = INF
+	for axis in CityLayout.ROAD_AXES:
+		if absf(value - axis) < distance_value:
+			nearest = axis
+			distance_value = absf(value - axis)
+	return nearest
+
+
+func _add_point_district(point: Dictionary) -> void:
+	var point_position: Vector3 = point["position"]
+	var district: String = str(point.get("district", CityLayout.get_district_id(point_position)))
+	point["district"] = district
+	point["district_id"] = district
+	point["district_name"] = CityLayout.get_district_name(point_position)
+
+
+func _make_district_forecourts() -> void:
+	_parking_lot(Vector3(-180, 0, -20), Vector2(28, 26), 3)
+	_parking_lot(Vector3(140, 0, -180), Vector2(28, 26), 2)
+	_parking_lot(Vector3(220, 0, -140), Vector2(28, 26), 1)
+	_parking_lot(Vector3(220, 0, -60), Vector2(26, 26), 2)
+	_plaza(Vector3(20, 0, -180), Vector2(28, 28), true)
+	_plaza(Vector3(-20, 0, -140), Vector2(28, 28), false)
+	_plaza(Vector3(140, 0, -20), Vector2(28, 28), false)
+	_plaza(Vector3(180, 0, 20), Vector2(28, 28), true)
+	for courtyard in [Vector3(-20, 0, 140), Vector3(-180, 0, 180), Vector3(-60, 0, 180), Vector3(-220, 0, 220), Vector3(-102, 0, 220)]:
+		_plaza(courtyard, Vector2(24, 22), false)
+		_tree(courtyard + Vector3(-8, 0, 5), 1.15, 0)
+		_tree(courtyard + Vector3(8, 0, 5), 1.05, 1)
+	for yard in [Vector3(140, 0, -180), Vector3(220, 0, -140), Vector3(102, 0, -102)]:
+		for index in range(2):
+			var container_position: Vector3 = yard + Vector3(-7 + float(index) * 14, 1.5, 5)
+			_rounded_box(self, container_position, Vector3(5.5, 3, 10), _material("container_" + str(index), TEAL if index == 0 else Color("b27a5c")), 0.13, true)
+			for rib in range(7):
+				_box(self, container_position + Vector3(-2.4 + float(rib) * 0.8, 0, -5.02), Vector3(0.07, 2.8, 0.045), _material("container_ribs", Color("d2c6b3")))
+	_label(self, "ДЕЛОВОЙ ЦЕНТР", Vector3(-180, 3, -84), 0.016, DARK, 56)
+	_label(self, "СЕВЕРНЫЙ РАЙОН", Vector3(-20, 3, -240), 0.016, DARK, 56)
+	_label(self, "ЛОГИСТИЧЕСКИЙ РАЙОН", Vector3(180, 3, -240), 0.016, DARK, 56)
+	_label(self, "ЖИЛЫЕ КВАРТАЛЫ", Vector3(-100, 3, 84), 0.016, DARK, 56)
+
+
+func _parking_lot(location: Vector3, dimensions: Vector2, car_count: int) -> void:
+	_box(self, location + Vector3(0, 0.035, 0), Vector3(dimensions.x, 0.035, dimensions.y), _material("parking_asphalt", Color("69747a")))
+	for bay in range(6):
+		_box(self, location + Vector3(-12 + float(bay) * 4.8, 0.07, -4), Vector3(0.12, 0.025, 8), _material("parking_lines", CREAM))
+	for index in range(car_count):
+		var car_position: Vector3 = location + Vector3(-8 + float(index) * 7, 0, -4)
+		_parked_van(car_position, index)
+	_lamp(location + Vector3(12, 0, 10))
+	_bin(location + Vector3(-12, 0, 10), true)
+
+
+func _parked_van(location: Vector3, variation: int) -> void:
+	var paint: Material = _material("parked_car_" + str(variation % 3), [Color("d3ad86"), Color("84aeb7"), Color("c8b9ca")][variation % 3])
+	_rounded_box(self, location + Vector3(0, 0.9, 0), Vector3(2.1, 1.35, 4.4), paint, 0.27, true)
+	_rounded_box(self, location + Vector3(0, 1.8, 0.2), Vector3(1.8, 0.85, 2.6), paint, 0.22)
+	_rounded_box(self, location + Vector3(0, 1.83, -1.15), Vector3(1.6, 0.59, 0.05), _material("car_window", Color("6e99a8")), 0.07)
+	for side in [-1.0, 1.0]:
+		for axle in [-1.35, 1.35]:
+			var wheel: MeshInstance3D = _cylinder(self, location + Vector3(side * 1.05, 0.48, axle), 0.39, 0.39, 0.22, _material("car_tyre", DARK), 12)
+			wheel.rotation.z = PI / 2.0
+		_rounded_box(self, location + Vector3(side * 0.66, 0.97, -2.23), Vector3(0.43, 0.25, 0.06), _material("car_light", CREAM), 0.05)
+
+
+func _plaza(location: Vector3, dimensions: Vector2, fountain: bool) -> void:
+	_box(self, location + Vector3(0, 0.025, 0), Vector3(dimensions.x, 0.03, dimensions.y), _material("forecourt", Color("ead4ac")))
+	for side in [-1.0, 1.0]:
+		_bench(location + Vector3(side * 8.0, 0, 4), -side * PI / 2.0)
+		_planter(location + Vector3(side * 10.0, 0, -8), 0.9, true)
+	if fountain:
+		_small_fountain(location, 3.6)
+	else:
+		_cylinder(self, location + Vector3(0, 0.1, 0), 2.8, 2.8, 0.12, _material("plaza_circle", CREAM), 16)
+
+
+func _small_fountain(location: Vector3, radius: float) -> void:
+	_map_fountains.append({"position": location, "radius": radius})
+	_cylinder(self, location + Vector3(0, 0.12, 0), radius, radius, 0.18, _material("fountain_rim", CREAM), 20)
+	_cylinder(self, location + Vector3(0, 0.23, 0), radius - 0.4, radius - 0.4, 0.06, _material("water", Color("69bdca")), 20)
+	_cylinder(self, location + Vector3(0, 0.7, 0), 0.75, 1.0, 1.0, _material("fountain_stone", Color("cdd5ce")), 12)
+	_cylinder(self, location + Vector3(0, 1.22, 0), 1.6, 1.0, 0.22, _material("fountain_stone", Color("cdd5ce")), 16)
+
+
+func _make_large_parks() -> void:
+	var path_material: Material = _material("park_path", Color("dfcfaa"))
+	# Two continuous park areas, each with actual walkable paths on the HUD.
+	_box(self, Vector3(-160, 0.025, -160), Vector3(146, 0.03, 5), path_material)
+	_box(self, Vector3(-160, 0.026, -160), Vector3(5, 0.03, 146), path_material)
+	_box(self, Vector3(-160, 0.027, -222), Vector3(146, 0.03, 4), path_material)
+	_box(self, Vector3(-222, 0.028, -160), Vector3(4, 0.03, 146), path_material)
+	_box(self, Vector3(160, 0.025, 180), Vector3(146, 0.03, 5), path_material)
+	_box(self, Vector3(160, 0.026, 180), Vector3(5, 0.03, 106), path_material)
+	_box(self, Vector3(160, 0.027, 130), Vector3(146, 0.03, 4), path_material)
+	_small_fountain(Vector3(-160, 0, -160), 6.0)
+	_small_fountain(Vector3(160, 0, 180), 5.0)
+	for location in [Vector3(-160, 0, -160), Vector3(160, 0, 180)]:
+		for corner in [Vector3(-12, 0, -8), Vector3(12, 0, -8), Vector3(-12, 0, 8), Vector3(12, 0, 8)]:
+			_bench(location + corner, 0.0 if corner.z < 0 else PI)
+			_bin(location + corner + Vector3(2, 0, 0), true)
+	# Fixed planting rows are decorative; they never become synchronized NPCs.
+	for row in range(5):
+		for column in range(5):
+			var location: Vector3 = Vector3(-224 + float(column) * 31, 0, -220 + float(row) * 30)
+			if absf(location.x + 160) < 11 or absf(location.z + 160) < 11:
+				continue
+			if location.x > -115 and location.z < -210:
+				continue
+			_tree(location, 1.0 + float((column + row) % 3) * 0.12, (column + row) % 2)
+	for row in range(3):
+		for column in range(5):
+			var location: Vector3 = Vector3(96 + float(column) * 31, 0, 146 + float(row) * 35)
+			if absf(location.x - 160) < 12 or absf(location.z - 180) < 11 or (column == 0 and row == 0):
+				continue
+			_tree(location, 1.05 + float(column % 3) * 0.1, (column + row) % 2)
+	_make_park_tree_clusters()
+	_label(self, "ГОРОДСКОЙ ПАРК", Vector3(-160, 3, -87), 0.018, DARK, 54)
+	_label(self, "ПАРК «ЛЕСНОЙ»", Vector3(160, 3, 127), 0.018, DARK, 54)
+	# Small court beside the forest park pavilion.
+	_box(self, Vector3(210, 0.04, 146), Vector3(24, 0.03, 15), _material("court", Color("afbfaa")))
+	for side in [-1.0, 1.0]:
+		_box(self, Vector3(210 + side * 10, 0.07, 146), Vector3(0.12, 0.025, 13), _material("court_lines", CREAM))
+		_box(self, Vector3(210, 0.07, 146 + side * 6.5), Vector3(20, 0.025, 0.12), _material("court_lines", CREAM))
+	_box(self, Vector3(210, 0.07, 146), Vector3(0.12, 0.025, 13), _material("court_lines", CREAM))
+
+
+func _make_park_tree_clusters() -> void:
+	# Fixed extra groves, clear of paths, plaza benches, entrances and the court.
+	# Like the original trees, these are decorative static meshes without colliders.
+	var north_grove: Array[Vector3] = [
+		Vector3(-211, 0, -208),
+		Vector3(-197, 0, -208),
+		Vector3(-183, 0, -208),
+		Vector3(-147, 0, -208),
+		Vector3(-133, 0, -208),
+		Vector3(-119, 0, -208),
+		Vector3(-105, 0, -208),
+		Vector3(-211, 0, -194),
+		Vector3(-197, 0, -194),
+		Vector3(-183, 0, -194),
+		Vector3(-147, 0, -194),
+		Vector3(-119, 0, -194),
+		Vector3(-105, 0, -194),
+		Vector3(-211, 0, -180),
+		Vector3(-197, 0, -180),
+		Vector3(-183, 0, -180),
+		Vector3(-147, 0, -180),
+		Vector3(-133, 0, -180),
+		Vector3(-119, 0, -180),
+		Vector3(-105, 0, -180),
+		Vector3(-211, 0, -144),
+		Vector3(-197, 0, -144),
+		Vector3(-183, 0, -144),
+		Vector3(-133, 0, -144),
+		Vector3(-119, 0, -144),
+		Vector3(-105, 0, -144),
+		Vector3(-211, 0, -130),
+		Vector3(-183, 0, -130),
+		Vector3(-147, 0, -130),
+		Vector3(-119, 0, -130),
+		Vector3(-105, 0, -130),
+		Vector3(-197, 0, -116),
+		Vector3(-183, 0, -116),
+		Vector3(-147, 0, -116),
+		Vector3(-133, 0, -116),
+		Vector3(-119, 0, -116),
+		Vector3(-105, 0, -116),
+		Vector3(-183, 0, -102),
+		Vector3(-147, 0, -102),
+		Vector3(-119, 0, -102),
+		Vector3(-105, 0, -102)
+	]
+	var south_grove: Array[Vector3] = [
+		Vector3(124, 0, 140),
+		Vector3(138, 0, 140),
+		Vector3(180, 0, 140),
+		Vector3(96, 0, 154),
+		Vector3(110, 0, 154),
+		Vector3(124, 0, 154),
+		Vector3(138, 0, 154),
+		Vector3(180, 0, 154),
+		Vector3(96, 0, 166),
+		Vector3(110, 0, 166),
+		Vector3(124, 0, 166),
+		Vector3(138, 0, 166),
+		Vector3(180, 0, 166),
+		Vector3(194, 0, 166),
+		Vector3(208, 0, 166),
+		Vector3(222, 0, 166),
+		Vector3(96, 0, 196),
+		Vector3(110, 0, 196),
+		Vector3(124, 0, 196),
+		Vector3(138, 0, 196),
+		Vector3(180, 0, 196),
+		Vector3(194, 0, 196),
+		Vector3(208, 0, 196),
+		Vector3(222, 0, 196),
+		Vector3(96, 0, 208),
+		Vector3(110, 0, 208),
+		Vector3(124, 0, 208),
+		Vector3(138, 0, 208),
+		Vector3(180, 0, 208),
+		Vector3(194, 0, 208),
+		Vector3(208, 0, 208),
+		Vector3(222, 0, 208),
+		Vector3(96, 0, 222),
+		Vector3(110, 0, 222),
+		Vector3(124, 0, 222),
+		Vector3(138, 0, 222),
+		Vector3(180, 0, 222),
+		Vector3(194, 0, 222),
+		Vector3(208, 0, 222),
+		Vector3(222, 0, 222)
+	]
+	for index in range(north_grove.size()):
+		_tree(north_grove[index], 0.90 + float(index % 4) * 0.09, index % 2)
+	for index in range(south_grove.size()):
+		_tree(south_grove[index], 0.92 + float(index % 4) * 0.08, (index + 1) % 2)
+
+
+func _make_extended_street_details() -> void:
+	for axis in CityLayout.ROAD_AXES:
+		for along in [-220.0, -180.0, -140.0, -102.0, 102.0, 140.0, 180.0, 220.0]:
+			var flat: Vector2 = Vector2(axis, along)
+			if _is_road(flat):
+				_lamp(Vector3(axis - 6.0, 0, along))
+				if int(absf(axis)) % 80 == 0:
+					_tree(Vector3(axis + 6.0, 0, along + 8), 0.6, 1)
+	for sign_position in [Vector3(-84, 0, -6), Vector3(-6, 0, -84), Vector3(90, 0, -120), Vector3(-6, 0, 84), Vector3(-84, 0, -240), Vector3(84, 0, 120)]:
+		_cylinder(self, sign_position + Vector3(0, 1.4, 0), 0.075, 0.075, 2.8, _material("metal", DARK), 12)
+		_rounded_box(self, sign_position + Vector3(0, 2.3, 0), Vector3(2.5, 0.7, 0.13), _material("direction_sign", TEAL), 0.08)
+
+
+func get_city_showcases() -> Array[Dictionary]:
+	return [
+		{"id": "business", "name": "Деловой центр", "focus": Vector3(-174, 16, -12), "camera": Vector3(-87, 88, 77)},
+		{"id": "residential", "name": "Жилые кварталы", "focus": Vector3(-72, 4, 145), "camera": Vector3(-10, 63, 214)},
+		{"id": "industrial", "name": "Логистический район", "focus": Vector3(164, 2, -172), "camera": Vector3(96, 65, -87)},
+		{"id": "park", "name": "Городской парк", "focus": Vector3(-159, 2, -158), "camera": Vector3(-94, 68, -98)},
+		{"id": "street", "name": "Деловой бульвар", "focus": Vector3(-160, 7, -54), "camera": Vector3(-160, 9, 6)},
+		{"id": "forest", "name": "Парк «Лесной»", "focus": Vector3(160, 2, 179), "camera": Vector3(88, 64, 246)}
+	]
 
 
 func _make_city() -> void :
@@ -202,6 +590,7 @@ func _make_city() -> void :
 
 
 func _make_park() -> void :
+	_map_fountains.append({"position": Vector3(64, 0, -65), "radius": 5.3})
 	var sand: = _material("park_path", Color("dfcfaa"))
 	_box(self, Vector3(65, 0.025, -65), Vector3(34, 0.03, 4), sand)
 	_box(self, Vector3(64, 0.026, -65), Vector3(4, 0.03, 34), sand)
@@ -267,9 +656,13 @@ func _make_delivery_points() -> void :
 		{"id": "offices", "name": "Городские офисы", "position": Vector3(66, 0, -34)}, 
 		{"id": "studio", "name": "Дизайн-студия", "position": Vector3(22, 0, -78)}
 	]
+	pickup_points.append_array(_extension_pickups)
+	delivery_points.append_array(_extension_deliveries)
 	for point in pickup_points:
+		_add_point_district(point)
 		_point_marker(point["position"], point["name"], true)
 	for point in delivery_points:
+		_add_point_district(point)
 		_point_marker(point["position"], point["name"], false)
 
 
@@ -278,7 +671,7 @@ func _building(building_name: String, location: Vector3, dimensions: Vector3, co
 	building.name = building_name.validate_node_name()
 	building.position = location
 	add_child(building)
-	_map_buildings.append({"name": building_name, "rect": Rect2(Vector2(location.x - dimensions.x * 0.5, location.z - dimensions.z * 0.5), Vector2(dimensions.x, dimensions.z)), "color": color})
+	_map_buildings.append({"name": building_name, "rect": Rect2(Vector2(location.x - dimensions.x * 0.5, location.z - dimensions.z * 0.5), Vector2(dimensions.x, dimensions.z)), "color": color, "height": dimensions.y, "kind": "house" if pitched_roof else "core", "district": CityLayout.get_district_id(location)})
 	_rounded_box(building, Vector3(0, dimensions.y / 2.0, 0), dimensions, _material("wall_" + color.to_html(), color), 0.42, true)
 	var foundation: = _material("foundation", Color("d9cfb8"))
 	_rounded_box(building, Vector3(0, 0.3, 0), Vector3(dimensions.x + 0.35, 0.6, dimensions.z + 0.35), foundation, 0.18)
@@ -287,11 +680,12 @@ func _building(building_name: String, location: Vector3, dimensions: Vector3, co
 		_rounded_box(building, Vector3(0, dimensions.y + 0.15, 0), Vector3(dimensions.x + 0.6, 0.35, dimensions.z + 0.6), _material("flat_roof", Color("677c82")), 0.16)
 		_roof_vent(building, Vector3( - dimensions.x * 0.25, dimensions.y + 0.65, 1))
 
-	var floors: int = maxi(1, int(dimensions.y / 3.2))
+	var floors: int = mini(8, maxi(1, int(dimensions.y / 3.2)))
 	var columns: int = maxi(2, int(dimensions.x / 4.6))
 	var side_columns: int = maxi(2, int(dimensions.z / 5.0))
 	for floor_index in range(floors):
-		var window_y: float = 2.2 + float(floor_index) * (3.0 if pitched_roof else 3.25)
+		var floor_step: float = (dimensions.y - 3.4) / float(maxi(floors - 1, 1)) if _extension_windows and not pitched_roof else (3.0 if pitched_roof else 3.25)
+		var window_y: float = 2.2 + float(floor_index) * floor_step
 		for window_index in range(columns):
 			var window_x: float = - dimensions.x / 2.0 + (float(window_index) + 0.5) * dimensions.x / float(columns)
 			var variation: int = (window_index + floor_index * 2) % 5
@@ -378,6 +772,9 @@ func _shop(shop_name: String, location: Vector3, dimensions: Vector3, color: Col
 
 
 func _window(parent: Node3D, location: Vector3, width: float, height: float, yaw: float, shutters: bool, variation: int) -> void :
+	if _extension_windows and not shutters:
+		_extension_window(parent, location, width, height, yaw, variation)
+		return
 	var window: = Node3D.new()
 	window.name = "FramedWindow"
 	window.position = location
@@ -499,7 +896,8 @@ func _point_marker(location: Vector3, title: String, is_pickup: bool) -> void :
 	add_child(ring)
 	_cylinder(self, location + Vector3(1.1, 0.65, 0), 0.07, 0.07, 1.3, _material("metal", DARK), 12)
 	_rounded_box(self, location + Vector3(1.1, 1.4, 0), Vector3(0.65, 0.5, 0.14), _material("point_sign_" + str(is_pickup), color), 0.06)
-	_label(self, title, location + Vector3(0, 2.4, 0), 0.009, CREAM, 40)
+	var title_label: Label3D = _label(self, title, location + Vector3(0, 2.4, 0), 0.009, CREAM, 40)
+	title_label.visibility_range_end = 80.0
 
 
 func _tree(location: Vector3, scale_value: float, type_value: int) -> void :
@@ -691,6 +1089,7 @@ func _facade_label(parent: Node3D, title: String, location: Vector3, pixel_size_
 	label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 	label.rotation.y = PI
 	label.outline_size = 3
+	label.visibility_range_end = 120.0
 	return label
 
 
@@ -720,7 +1119,12 @@ func _map_footprint(transform_value: Transform3D, dimensions: Vector3) -> Rect2:
 
 func get_map_layout() -> Dictionary:
 	return {
-		"bounds": Rect2(Vector2(-SIZE * 0.5, -SIZE * 0.5), Vector2(SIZE, SIZE)),
+		"bounds": CityLayout.get_bounds(),
+		"playable_bounds": CityLayout.PLAYABLE_BOUNDS,
+		"districts": CityLayout.get_districts(),
+		"parks": [CityLayout.ORIGINAL_PARK, CityLayout.NORTH_PARK, CityLayout.SOUTH_PARK],
+		"fountains": _map_fountains.duplicate(true),
+		"depot": Vector3(-23.0, 0.0, 23.0),
 		"roads": _map_roads.duplicate(),
 		"paths": _map_paths.duplicate(),
 		"obstacles": _map_obstacles.duplicate(),

@@ -13,7 +13,9 @@ signal disconnected(reason: String)
 signal message_received(message: String)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
-const GAME_VERSION: String = "0.9.0"
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
+const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
+const GAME_VERSION: String = "0.14.0"
 const PORT: int = 7777
 const SERVER_ID: int = 1
 const CONNECT_TIMEOUT_MS: int = 8000
@@ -71,7 +73,7 @@ func _process(_delta: float) -> void :
 			_peer.disconnect_peer(peer_id)
 
 
-func host_game(profile: Dictionary, room_name: String, max_players: int, shift_seconds: int) -> Error:
+func host_game(profile: Dictionary, room_name: String, max_players: int, shift_seconds: int, shift_mode: String = "competitive") -> Error:
 	_bind_signals()
 	_reset_transport()
 	_peer = ENetMultiplayerPeer.new()
@@ -95,7 +97,9 @@ func host_game(profile: Dictionary, room_name: String, max_players: int, shift_s
 		"room_name": _clean_text(room_name, 40, "Courier room"), 
 		"host_ip": _local_address(), 
 		"max_players": clampi(max_players, 1, 4), 
-		"shift_seconds": duration, 
+		"shift_seconds": duration,
+		"shift_mode": TeamShiftRules.normalize_mode(shift_mode),
+		"team_goal_per_player": int(TeamShiftRules.load_config()["deliveries_per_player"]), 
 	}
 	_broadcast_lobby()
 	return OK
@@ -225,6 +229,7 @@ func update_member_profile(peer_id: int, profile: Dictionary) -> void :
 		return
 	var sanitized: Dictionary = _sanitize_profile(profile)
 	members[peer_id]["profile"] = sanitized
+	members[peer_id]["appearance"] = sanitized["appearance"].duplicate(true)
 	members[peer_id]["name"] = sanitized["player_name"]
 	if peer_id == SERVER_ID:
 		_local_profile = sanitized.duplicate(true)
@@ -301,7 +306,10 @@ func _rpc_start(data: Dictionary) -> void :
 	if session_id.is_empty():
 		return
 	phase = "playing"
-	session_started.emit(data.duplicate(true))
+	var confirmed: Dictionary = data.duplicate(true)
+	confirmed["shift_mode"] = TeamShiftRules.normalize_mode(data.get("shift_mode", "competitive"))
+	lobby_config["shift_mode"] = confirmed["shift_mode"]
+	session_started.emit(confirmed)
 
 
 @rpc("authority", "call_remote", "reliable", 0)
@@ -460,8 +468,9 @@ func _apply_lobby(data: Dictionary) -> void :
 		if not approved.has(peer_id):
 			departed.append(peer_id)
 	members = approved
-	for key: String in ["room_name", "host_ip", "max_players", "shift_seconds"]:
+	for key: String in ["room_name", "host_ip", "max_players", "shift_seconds", "team_goal_per_player"]:
 		lobby_config[key] = data.get(key, lobby_config.get(key))
+	lobby_config["shift_mode"] = TeamShiftRules.normalize_mode(data.get("shift_mode", "competitive"))
 	phase = String(data.get("phase", "lobby"))
 	session_id = String(data.get("session_id", ""))
 	_lobby_epoch = int(data.get("lobby_epoch", _lobby_epoch))
@@ -492,7 +501,8 @@ func _reset_transport() -> void :
 
 
 func _member(peer_id: int, profile: Dictionary, ready: bool) -> Dictionary:
-	return {"id": peer_id, "name": profile["player_name"], "profile": profile.duplicate(true), "ready": ready}
+	return {"id": peer_id, "name": profile["player_name"], "profile": profile.duplicate(true), "ready": ready,
+		"appearance": CosmeticCatalog.sanitize_profile(profile)["appearance"]}
 
 
 func _sanitize_profile(source: Dictionary) -> Dictionary:
@@ -510,6 +520,7 @@ func _sanitize_profile(source: Dictionary) -> Dictionary:
 	result["level"] = level
 	result["rank"] = _rank_for_level(level)
 	result.merge(VehicleCatalog.sanitize_profile_vehicles(source))
+	result.merge(CosmeticCatalog.sanitize_profile(source), true)
 	return result
 
 

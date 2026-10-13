@@ -1,17 +1,34 @@
 # Delivery Simulator
 
-Editable Godot demo **0.9.0**, restored from the verified 0.8.0 build. Open `GodotDemo/project.godot` with Godot 4.6.3.
+Editable Godot demo **0.14.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
 
-The city map now matches the actual streets and buildings. Mini-map and M-map show the same route, turn arrows, player heading, route distance and confirmed pickup/delivery goal. Routes avoid solid buildings; walking/bicycle use paths, motor transport follows roads with a dashed final walking approach.
+**Cheat codes** open with F2 (Fn+F2 on some Macs), or the menu/pause button. Enter a code and press Enter or Apply. Codes ignore letter case and can be repeated. They update the local career profile; LAN grants are calculated by the Host for the requesting player. Grants do not count towards shift earnings, delivery statistics, Team Shift goals or district events.
 
-[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11762136467) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38282955933/artifacts/11761887835)
+| Code | Effect |
+|---|---|
+| MONEY10000 | +10,000 Money |
+| MONEY50000 | +50,000 Money |
+| XP1000 | +1,000 XP |
+| LEVELUP | Next career level, up to 10 |
+| DELIVERYMASTER | Level 10 |
+| ALLVEHICLES | Own bicycle, scooter and car; normal level requirements remain |
+
+**Customization** is available from Profile and Garage: courier outfits, backpack shapes and vehicle paint. Free styles work from the beginning; extra styles use Money. Purchases and equipped choices are saved locally and displayed to LAN friends.
+
+The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51 delivery addresses** across six districts. M opens the full map; routes follow the actual city geometry.
+
+**Lunch Rush** starts 45 seconds into a shift: three minutes of extra cafe-to-office orders in the business district. Timely delivery pays 50% extra Money. LAN **Team Shift** adds shared goals, contribution bonuses and explicit parcel handoffs through Tab.
+
+[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38356153333/artifacts/11793520371) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38356153333/artifacts/11793950006)
 
 Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
 
-[Build evidence and limits](docs/BUILD_REPORT.md) · [Full navigation source/setup](docs/NAVIGATION.md) · [Recovery history](RECOVERY.md)
+CI passed **11459 checks** across source and both exact target packs, with six two-process ENet scenarios and **23 actual UI/city renders**.
 
-LAN: Host Game on one computer; Join Game with the Host's IPv4 address on the other. Use the same game version and local network; UDP port 7777. Ready → Start Game. Coordinates and orders are confirmed by the Host. Profile progress remains local.
+LAN: Host Game → friends Join Game using the Host IPv4 → Ready → Start. Same version **0.14.0**, same local network, UDP port 7777. Career profiles remain local.
 
-CI passed 34 checks on source and on both exact target packs, 21 checks in two ENet processes, and map renders at 1280x720/960x540. Native OS launch, physical mixed-platform/four-device LAN and FPS still require acceptance testing.
+[Cheat codes: source, setup and testing](docs/CHEAT_CODES.md) · [Customization](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
 
-This is the standalone Godot demo, separate from the Unity project in the original specification. The old recovery tag's automatically generated source ZIP contains its initial README; use the current source branches for the full editable project.
+Native Windows/macOS launch, mixed-platform four-device LAN and FPS still require acceptance testing. This is the separately agreed Godot demo.
+
+![Cheat console — actual engine capture](docs/screenshots/cheat-menu-1280.png)

@@ -1,0 +1,19 @@
+{
+  "first_start_seconds": 45,
+  "duration_seconds": 180,
+  "cooldown_seconds": 300,
+  "available_orders": 3,
+  "bonus_multiplier": 1.5,
+  "maximum_route_meters": 130,
+  "pickup_ids": [
+    "pickup_espresso"
+  ],
+  "delivery_ids": [
+    "delivery_northstar",
+    "delivery_metro",
+    "delivery_courier_hub",
+    "delivery_riverbank",
+    "delivery_summit",
+    "delivery_insurance"
+  ]
+}

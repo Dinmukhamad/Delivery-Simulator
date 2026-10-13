@@ -1,5 +1,7 @@
 extends RefCounted
 
+const CityLayout = preload("res://scripts/city_layout.gd")
+
 
 const GARAGE_POSITION: = Vector3(-66.0, 0.0, 10.0)
 const GARAGE_DISTANCE: = 5.0
@@ -123,7 +125,7 @@ static func _clear_of_positions(position: Vector3, blocked: Array[Vector3], mini
 
 
 static func _inside_bounds(position: Vector3) -> bool:
-	return _finite(position) and absf(position.x) <= 84.0 and absf(position.z) <= 84.0 and position.y >= -1.0 and position.y <= 6.0
+	return _finite(position) and CityLayout.contains_position(position) and position.y >= -1.0 and position.y <= 6.0
 
 
 static func _finite(value: Vector3) -> bool:
