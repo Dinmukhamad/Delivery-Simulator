@@ -10,10 +10,16 @@ The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51
 
 LAN supports **Team Shift** goals, one-time contribution bonuses and explicit parcel handoffs through Tab. The Host controls common orders, event times, rewards and in-session cosmetic purchases.
 
-Build verification for 0.13.0 is in progress. Download links and evidence will be recorded after successful CI exports.
+[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38351852584/artifacts/11791746672) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38351852584/artifacts/11790374877)
+
+Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
+
+CI passed **9867 checks** across source and both exact target packs, with five two-process ENet scenarios and 20 actual UI/city renders.
 
 LAN: select appearance in Profile before Host/Join, or visit Garage during the shift. Friends Join Game using the Host IPv4 address, then Ready → Start. Same version **0.13.0**, same local network, UDP port 7777. Career profiles remain local.
 
 [Customization: source, setup and testing](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
 
 Native Windows/macOS launch, mixed-platform four-device LAN and FPS still require acceptance testing. This is the separately agreed Godot demo.
+
+![Customization — actual 3D engine capture](docs/screenshots/cosmetic-customization-1280.png)

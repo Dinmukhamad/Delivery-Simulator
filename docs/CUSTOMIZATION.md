@@ -76,7 +76,15 @@ Main и LanAuthority используют общий CosmeticCatalog для пр
 
 ## 7. Проверка и приёмка
 
-Автоматические проверки и настоящие рендеры запускаются через [build-demo.yml](../.github/workflows/build-demo.yml). Конкретный запуск, число проверок, архивы и скриншоты записываются в [BUILD_REPORT.md](BUILD_REPORT.md) после завершения CI.
+Автоматические проверки и настоящие рендеры запускаются через [build-demo.yml](../.github/workflows/build-demo.yml). Версия 0.13.0 успешно прошла [сборку 38351852584](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38351852584): 9867 проверок исходников, обоих точных экспортированных пакетов и пяти LAN-сценариев; выполнены 20 рендеров. Архивы, хеши и снимки приведены в [BUILD_REPORT.md](BUILD_REPORT.md).
+
+Проверка каталога, моделей, Host и Solo:
+
+```sh
+godot --headless --path GodotDemo --script tests/cosmetics.gd -- --test-mode
+```
+
+Сетевой тест `lan_cosmetic_peer.gd` запускается двумя процессами в workflow с `--test-mode --isolated-save --role=host|client --coord=/tmp/...`. Для настоящей тестовой JSON-записи обязательны `DELIVERY_TEAM_TEST_SAVE=1` и отдельные свежие временные `XDG_DATA_HOME`/`XDG_CONFIG_HOME` каждого процесса с компонентом пути `host` либо `client`. Сценарий проверяет, что `user://` находится в этом каталоге, и отказывается писать в обычный профиль. Workflow создаёт и удаляет временные папки автоматически.
 
 Пример рендера из корня репозитория:
 
