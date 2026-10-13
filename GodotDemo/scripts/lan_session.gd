@@ -13,8 +13,9 @@ signal disconnected(reason: String)
 signal message_received(message: String)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
-const GAME_VERSION: String = "0.12.0"
+const GAME_VERSION: String = "0.13.0"
 const PORT: int = 7777
 const SERVER_ID: int = 1
 const CONNECT_TIMEOUT_MS: int = 8000
@@ -228,6 +229,7 @@ func update_member_profile(peer_id: int, profile: Dictionary) -> void :
 		return
 	var sanitized: Dictionary = _sanitize_profile(profile)
 	members[peer_id]["profile"] = sanitized
+	members[peer_id]["appearance"] = sanitized["appearance"].duplicate(true)
 	members[peer_id]["name"] = sanitized["player_name"]
 	if peer_id == SERVER_ID:
 		_local_profile = sanitized.duplicate(true)
@@ -499,7 +501,8 @@ func _reset_transport() -> void :
 
 
 func _member(peer_id: int, profile: Dictionary, ready: bool) -> Dictionary:
-	return {"id": peer_id, "name": profile["player_name"], "profile": profile.duplicate(true), "ready": ready}
+	return {"id": peer_id, "name": profile["player_name"], "profile": profile.duplicate(true), "ready": ready,
+		"appearance": CosmeticCatalog.sanitize_profile(profile)["appearance"]}
 
 
 func _sanitize_profile(source: Dictionary) -> Dictionary:
@@ -517,6 +520,7 @@ func _sanitize_profile(source: Dictionary) -> Dictionary:
 	result["level"] = level
 	result["rank"] = _rank_for_level(level)
 	result.merge(VehicleCatalog.sanitize_profile_vehicles(source))
+	result.merge(CosmeticCatalog.sanitize_profile(source), true)
 	return result
 
 

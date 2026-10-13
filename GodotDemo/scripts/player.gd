@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 
 const RoundedGeometry = preload("res://scripts/rounded_geometry.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 
 const WALK_SPEED: = 4.5
 const RUN_SPEED: = 8.5
@@ -46,6 +47,15 @@ var _identity_name: = ""
 var _identity_index: = 0
 var _identity_label: Label3D
 var _identity_materials: Array[StandardMaterial3D] = []
+
+var _appearance: Dictionary = {"outfit": "classic_blue", "backpack": "classic", "vehicle_paint": "factory"}
+var _appearance_explicit: = false
+var _appearance_key: = ""
+var _outfit_materials: Dictionary = {}
+var _backpack_materials: Array[StandardMaterial3D] = []
+var _backpack_variants: Dictionary = {}
+var _backpack_straps: Array[Node3D] = []
+
 
 
 func _ready() -> void :
@@ -257,8 +267,44 @@ func set_network_identity(display_name: String, color_index: int = 0) -> void :
 	if is_instance_valid(_identity_label):
 		_identity_label.text = display_name
 		_identity_label.visible = not is_riding() and not display_name.is_empty()
-	for index in range(_identity_materials.size()):
-		_identity_materials[index].albedo_color = IDENTITY_COLORS[_identity_index][index]
+	if not _appearance_explicit:
+		for index in range(_identity_materials.size()):
+			_identity_materials[index].albedo_color = IDENTITY_COLORS[_identity_index][index]
+
+
+
+# Appearance contains catalog IDs only; snapshots never provide colors or materials.
+# It can be applied before _ready, and repeated snapshots preserve all mesh resources.
+func apply_appearance(raw: Dictionary) -> void:
+	var normalized: Dictionary = CosmeticCatalog.normalize_appearance(raw)
+	var key: String = "%s:%s:%s" % [normalized["outfit"], normalized["backpack"], normalized["vehicle_paint"]]
+	_appearance = normalized
+	_appearance_explicit = true
+	if key == _appearance_key:
+		return
+	_appearance_key = key
+	if not _outfit_materials.is_empty():
+		_apply_courier_appearance()
+
+
+func get_appearance() -> Dictionary:
+	return _appearance.duplicate(true)
+
+
+func _apply_courier_appearance() -> void:
+	var palette: Dictionary = CosmeticCatalog.outfit_palette(str(_appearance["outfit"]))
+	for channel: String in _outfit_materials:
+		var material: StandardMaterial3D = _outfit_materials[channel]
+		material.albedo_color = Color(str(palette[channel]))
+	var bag_palette: Dictionary = CosmeticCatalog.backpack_palette(str(_appearance["backpack"]))
+	_backpack_materials[0].albedo_color = Color(str(bag_palette["color"]))
+	_backpack_materials[1].albedo_color = Color(str(bag_palette["trim"]))
+	var style: String = str(bag_palette["style"])
+	for variant_id: String in _backpack_variants:
+		var variant: Node3D = _backpack_variants[variant_id]
+		variant.visible = variant_id == style
+	for strap: Node3D in _backpack_straps:
+		strap.visible = style != "messenger"
 
 
 func apply_network_pose(pose: Dictionary) -> void :
@@ -348,6 +394,11 @@ func _build_courier() -> void :
 	var jacket_light: = _material(IDENTITY_COLORS[_identity_index][2])
 	_identity_materials = [jacket, jacket_dark, jacket_light]
 	var pants: = _material(Color("#213044"))
+	var cap: = _material(IDENTITY_COLORS[_identity_index][0])
+	_outfit_materials = {"jacket": jacket, "dark": jacket_dark, "light": jacket_light, "cap": cap, "pants": pants}
+	var bag_color: = _material(Color("#164293"))
+	var bag_trim: = _material(Color("#246cdb"))
+	_backpack_materials = [bag_color, bag_trim]
 	var skin: = _material(Color("#efb886"))
 	var cheeks: = _material(Color("#e89d7f"))
 	var shoes: = _material(Color("#f0f1eb"))
@@ -368,9 +419,9 @@ func _build_courier() -> void :
 	for side in [-1.0, 1.0]:
 		_box(_visual, "ChestPocket", Vector3(0.14, 0.12, 0.025), Vector3(side * 0.145, 1.16, -0.218), jacket_light, 0.021)
 		_box(_visual, "PocketWelt", Vector3(0.115, 0.012, 0.009), Vector3(side * 0.145, 1.205, -0.237), jacket_dark)
-		_box(_visual, "BackpackFrontStrap", Vector3(0.045, 0.45, 0.022), Vector3(side * 0.24, 1.25, -0.207), jacket_dark, 0.009)
-		_box(_visual, "BackpackShoulderStrap", Vector3(0.047, 0.036, 0.36), Vector3(side * 0.24, 1.53, 0.025), jacket_dark, 0.012)
-		_box(_visual, "StrapBuckle", Vector3(0.052, 0.04, 0.028), Vector3(side * 0.24, 1.195, -0.225), tape, 0.008)
+		_backpack_straps.append(_box(_visual, "BackpackFrontStrap", Vector3(0.045, 0.45, 0.022), Vector3(side * 0.24, 1.25, -0.207), bag_color, 0.009))
+		_backpack_straps.append(_box(_visual, "BackpackShoulderStrap", Vector3(0.047, 0.036, 0.36), Vector3(side * 0.24, 1.53, 0.025), bag_color, 0.012))
+		_backpack_straps.append(_box(_visual, "StrapBuckle", Vector3(0.052, 0.04, 0.028), Vector3(side * 0.24, 1.195, -0.225), tape, 0.008))
 
 	_ellipsoid(_visual, "Neck", Vector3(0.18, 0.2, 0.19), Vector3(0.0, 1.57, 0.0), skin)
 	_ellipsoid(_visual, "Head", Vector3(0.4, 0.43, 0.365), Vector3(0.0, 1.765, -0.006), skin)
@@ -386,23 +437,12 @@ func _build_courier() -> void :
 	_ellipsoid(_visual, "Nose", Vector3(0.053, 0.047, 0.05), Vector3(0.0, 1.765, -0.19), skin)
 	_box(_visual, "Smile", Vector3(0.058, 0.011, 0.011), Vector3(0.0, 1.711, -0.184), hair, 0.004)
 
-	_ellipsoid(_visual, "Cap", Vector3(0.433, 0.205, 0.405), Vector3(0.0, 1.948, 0.008), jacket)
-	_ellipsoid(_visual, "CapPeak", Vector3(0.355, 0.032, 0.25), Vector3(0.0, 1.941, -0.213), jacket)
+	_ellipsoid(_visual, "Cap", Vector3(0.433, 0.205, 0.405), Vector3(0.0, 1.948, 0.008), cap)
+	_ellipsoid(_visual, "CapPeak", Vector3(0.355, 0.032, 0.25), Vector3(0.0, 1.941, -0.213), cap)
 	_ellipsoid(_visual, "CapEmblem", Vector3(0.069, 0.047, 0.015), Vector3(0.0, 1.982, -0.184), tape)
 	_box(_visual, "CapEmblemStripe", Vector3(0.036, 0.009, 0.008), Vector3(0.0, 1.982, -0.196), jacket_dark)
 
-	_box(_visual, "DeliveryBackpack", Vector3(0.53, 0.57, 0.26), Vector3(0.0, 1.26, 0.31), jacket_dark, 0.065)
-	_box(_visual, "BackpackFlap", Vector3(0.465, 0.155, 0.035), Vector3(0.0, 1.415, 0.443), jacket, 0.025)
-	_box(_visual, "BackpackStripe", Vector3(0.425, 0.055, 0.012), Vector3(0.0, 1.294, 0.447), tape, 0.011)
-	_box(_visual, "BackpackPocket", Vector3(0.425, 0.19, 0.063), Vector3(0.0, 1.148, 0.448), jacket, 0.037)
-	_box(_visual, "BackpackPocketZip", Vector3(0.34, 0.015, 0.012), Vector3(0.0, 1.214, 0.484), shoes)
-	_box(_visual, "BackpackZipPull", Vector3(0.015, 0.04, 0.013), Vector3(0.13, 1.199, 0.495), tape)
-	_box(_visual, "BackpackParcelBadge", Vector3(0.08, 0.063, 0.012), Vector3(0.0, 1.145, 0.486), tape, 0.013)
-	_box(_visual, "BackpackParcelTape", Vector3(0.012, 0.05, 0.009), Vector3(0.0, 1.145, 0.496), shoes)
-	for side in [-1.0, 1.0]:
-		_box(_visual, "BackpackSeam", Vector3(0.012, 0.31, 0.011), Vector3(side * 0.221, 1.297, 0.433), jacket_light)
-		_box(_visual, "BackpackSidePocket", Vector3(0.07, 0.19, 0.15), Vector3(side * 0.262, 1.135, 0.3), jacket, 0.028)
-	_box(_visual, "BackpackHandle", Vector3(0.12, 0.034, 0.052), Vector3(0.0, 1.568, 0.3), pants, 0.015)
+	_build_backpack_variants(_visual, Vector3(0.0, 1.26, 0.31), Vector3.ONE, bag_color, bag_trim, tape, shoes)
 
 	_box(_visual, "TrouserHips", Vector3(0.52, 0.15, 0.33), Vector3(0.0, 0.935, 0.0), pants, 0.045)
 	_left_leg = _limb(_visual, "LeftLeg", Vector3(-0.16, 0.94, 0.0))
@@ -450,6 +490,79 @@ func _build_courier() -> void :
 	_identity_label.text = _identity_name
 	_identity_label.visible = not is_riding() and not _identity_name.is_empty()
 	add_child(_identity_label)
+	if _appearance_explicit:
+		_apply_courier_appearance()
+
+
+
+# Four small static variant groups are built once, then only visibility/materials
+# change. The group is a visual child; it owns no collider or movement script.
+func _build_backpack_variants(parent: Node3D, center: Vector3, fit: Vector3, color: StandardMaterial3D, trim: StandardMaterial3D, badge: StandardMaterial3D, cream: StandardMaterial3D) -> void:
+	var variants: = Node3D.new()
+	variants.name = "BackpackVariants"
+	parent.add_child(variants)
+	var classic: = _backpack_group(variants, "BackpackClassic", center, fit)
+	_box(classic, "DeliveryBackpack", Vector3(0.53, 0.57, 0.26), Vector3(0.0, 1.26, 0.31) - Vector3(0.0, 1.26, 0.31), color, 0.065)
+	_box(classic, "BackpackFlap", Vector3(0.465, 0.155, 0.035), Vector3(0.0, 1.415, 0.443) - Vector3(0.0, 1.26, 0.31), trim, 0.025)
+	_box(classic, "BackpackStripe", Vector3(0.425, 0.055, 0.012), Vector3(0.0, 1.294, 0.447) - Vector3(0.0, 1.26, 0.31), badge, 0.011)
+	_box(classic, "BackpackPocket", Vector3(0.425, 0.19, 0.063), Vector3(0.0, 1.148, 0.448) - Vector3(0.0, 1.26, 0.31), trim, 0.037)
+	_box(classic, "BackpackPocketZip", Vector3(0.34, 0.015, 0.012), Vector3(0.0, 1.214, 0.484) - Vector3(0.0, 1.26, 0.31), cream)
+	_box(classic, "BackpackZipPull", Vector3(0.015, 0.04, 0.013), Vector3(0.13, 1.199, 0.495) - Vector3(0.0, 1.26, 0.31), badge)
+	_box(classic, "BackpackParcelBadge", Vector3(0.08, 0.063, 0.012), Vector3(0.0, 1.145, 0.486) - Vector3(0.0, 1.26, 0.31), badge, 0.013)
+	_box(classic, "BackpackParcelTape", Vector3(0.012, 0.05, 0.009), Vector3(0.0, 1.145, 0.496) - Vector3(0.0, 1.26, 0.31), cream)
+	for side in [-1.0, 1.0]:
+		_box(classic, "BackpackSeam", Vector3(0.012, 0.31, 0.011), Vector3(side * 0.221, 1.297, 0.433) - Vector3(0.0, 1.26, 0.31), trim)
+		_box(classic, "BackpackSidePocket", Vector3(0.07, 0.19, 0.15), Vector3(side * 0.262, 1.135, 0.3) - Vector3(0.0, 1.26, 0.31), trim, 0.028)
+	_box(classic, "BackpackHandle", Vector3(0.12, 0.034, 0.052), Vector3(0.0, 1.568, 0.3) - Vector3(0.0, 1.26, 0.31), color, 0.015)
+
+	var compact: Node3D = classic.duplicate(0) as Node3D
+	compact.name = "BackpackCompact"
+	compact.scale = fit * Vector3(0.79, 0.74, 0.82)
+	compact.position = center + Vector3(0.0, -0.025, -0.015)
+	variants.add_child(compact)
+
+	var rolltop: = _backpack_group(variants, "BackpackRolltop", center, fit)
+	_box(rolltop, "DeliveryBackpack", Vector3(0.43, 0.65, 0.25), Vector3(0.0, 0.03, 0.0), color, 0.065)
+	_box(rolltop, "RolltopFold", Vector3(0.435, 0.12, 0.25), Vector3(0.0, 0.338, 0.0), trim, 0.034)
+	_ellipsoid(rolltop, "RolltopRoll", Vector3(0.48, 0.105, 0.13), Vector3(0.0, 0.412, 0.0), color)
+	_box(rolltop, "RolltopClosure", Vector3(0.035, 0.29, 0.023), Vector3(0.0, 0.245, 0.139), color, 0.008)
+	_box(rolltop, "RolltopBuckle", Vector3(0.066, 0.052, 0.032), Vector3(0.0, 0.133, 0.151), badge, 0.012)
+	_box(rolltop, "RolltopPocket", Vector3(0.35, 0.21, 0.058), Vector3(0.0, -0.151, 0.139), trim, 0.027)
+	_box(rolltop, "RolltopPocketZip", Vector3(0.28, 0.013, 0.016), Vector3(0.0, -0.064, 0.174), cream, 0.004)
+	for side in [-1.0, 1.0]:
+		_box(rolltop, "RolltopSidePocket", Vector3(0.064, 0.23, 0.13), Vector3(side * 0.219, -0.132, 0.0), trim, 0.018)
+	_box(rolltop, "RolltopStripe", Vector3(0.26, 0.029, 0.016), Vector3(0.0, -0.171, 0.177), badge, 0.005)
+
+	var messenger: = _backpack_group(variants, "BackpackMessenger", center, fit)
+	var messenger_body: = Node3D.new()
+	messenger_body.name = "MessengerBody"
+	messenger_body.position = Vector3(0.19, -0.115, 0.02)
+	messenger_body.rotation.z = 0.1
+	messenger.add_child(messenger_body)
+	_box(messenger_body, "DeliveryBackpack", Vector3(0.57, 0.35, 0.2), Vector3.ZERO, color, 0.055)
+	_box(messenger_body, "MessengerFlap", Vector3(0.525, 0.22, 0.035), Vector3(0.0, 0.055, 0.107), trim, 0.034)
+	_box(messenger_body, "MessengerStripe", Vector3(0.39, 0.029, 0.016), Vector3(0.0, 0.018, 0.132), badge, 0.008)
+	for side in [-1.0, 1.0]:
+		_box(messenger_body, "MessengerClosure", Vector3(0.033, 0.16, 0.02), Vector3(side * 0.163, -0.074, 0.127), color, 0.005)
+		_box(messenger_body, "MessengerBuckle", Vector3(0.061, 0.045, 0.027), Vector3(side * 0.163, -0.05, 0.141), badge, 0.009)
+	var front_strap: = _box(messenger, "CrossbodyFrontStrap", Vector3(0.064, 0.75, 0.025), Vector3(0.0, 0.045, -0.537), color, 0.012)
+	front_strap.rotation.z = -0.52
+	var rear_strap: = _box(messenger, "CrossbodyRearStrap", Vector3(0.063, 0.7, 0.025), Vector3(0.0, 0.052, -0.077), color, 0.012)
+	rear_strap.rotation.z = 0.52
+
+	_backpack_variants = {"classic": classic, "compact": compact, "rolltop": rolltop, "messenger": messenger}
+	for style: String in _backpack_variants:
+		var group: Node3D = _backpack_variants[style]
+		group.visible = style == "classic"
+
+
+func _backpack_group(parent: Node3D, group_name: String, center: Vector3, fit: Vector3) -> Node3D:
+	var group: = Node3D.new()
+	group.name = group_name
+	group.position = center
+	group.scale = fit
+	parent.add_child(group)
+	return group
 
 
 func _animate_courier(delta: float, running: bool) -> void :

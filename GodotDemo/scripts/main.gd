@@ -14,8 +14,9 @@ const AudioManagerScript = preload("res://scripts/audio_manager.gd")
 const NavigationService = preload("res://scripts/navigation_service.gd")
 const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.12.0"
+const DEMO_VERSION: = "0.13.0"
 
 var city
 var player
@@ -35,6 +36,8 @@ var orders: Array[Dictionary] = []
 var active_order: Dictionary = {}
 var state: String = "menu"
 var modal: String = ""
+var _customization_return_modal: String = ""
+var cosmetic_defs: Dictionary = {}
 var shift_remaining: float = 900.0
 var shift_stats: Dictionary = {}
 var next_order_id: int = 1
@@ -67,6 +70,7 @@ func _ready() -> void :
 	city_order_config = CityOrderRules.load_config()
 	district_event_config = DistrictEventRules.load_config()
 	vehicle_defs = VehicleCatalogScript.load_definitions()
+	cosmetic_defs = CosmeticCatalog.load_definitions()
 	profile = _load_profile()
 	city = WorldScript.new()
 	add_child(city)
@@ -75,6 +79,7 @@ func _ready() -> void :
 	player = PlayerScript.new()
 	add_child(player)
 	player.reset_at(city.spawn_position)
+	_apply_profile_appearance()
 	if player.has_method("set_view_direction"):
 		player.set_view_direction(PI)
 	hud = HudScript.new()
@@ -100,6 +105,10 @@ func _ready() -> void :
 	hud.vehicle_buy_requested.connect(_buy_vehicle)
 	hud.vehicle_spawn_requested.connect(_spawn_vehicle)
 	hud.garage_closed.connect(_close_modal)
+	hud.customization_requested.connect(_open_customization)
+	hud.cosmetic_buy_requested.connect(_buy_cosmetic)
+	hud.cosmetic_select_requested.connect(_select_cosmetic)
+	hud.customization_closed.connect(_close_customization)
 	hud.settings_requested.connect(_open_settings)
 	hud.settings_apply_requested.connect(_apply_settings)
 	hud.settings_closed.connect(_close_settings)
@@ -189,7 +198,9 @@ func _input(event: InputEvent) -> void :
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 		if key == KEY_ESCAPE:
-			if modal == "settings":
+			if modal == "customization":
+				_close_customization()
+			elif modal == "settings":
 				_close_settings()
 			elif state in ["network_menu", "connecting", "lobby"]:
 				_leave_lan()
@@ -201,13 +212,13 @@ func _input(event: InputEvent) -> void :
 				else:
 					_pause()
 			get_viewport().set_input_as_handled()
-		elif state == "playing" and key == KEY_TAB:
+		elif state == "playing" and modal != "customization" and key == KEY_TAB:
 			if modal == "orders":
 				_close_modal()
 			else:
 				_open_orders()
 			get_viewport().set_input_as_handled()
-		elif state == "playing" and key == KEY_M:
+		elif state == "playing" and modal != "customization" and key == KEY_M:
 			if modal == "map":
 				_close_modal()
 			else:
@@ -579,6 +590,8 @@ func _close_modal() -> void :
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
+	hud.hide_customization()
+	_customization_return_modal = ""
 	modal = ""
 	if state == "playing":
 		hud.show_game()
@@ -591,6 +604,8 @@ func _pause() -> void :
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
+	hud.hide_customization()
+	_customization_return_modal = ""
 	modal = ""
 	state = "paused"
 	_set_gameplay_controls(false)
@@ -715,7 +730,8 @@ func _dismiss_settings() -> void :
 func _default_profile() -> Dictionary:
 	return {"version": 1, "player_name": "Courier", "money": 0, "xp": 0, "level": 1, 
 		"rank": "Rookie Courier", "total_deliveries": 0, "express_deliveries": 0, 
-		"total_money_earned": 0, "best_shift": 0, "owned_vehicles": [], "selected_vehicle": ""}
+		"total_money_earned": 0, "best_shift": 0, "owned_vehicles": [], "selected_vehicle": "",
+		"appearance": CosmeticCatalog.default_appearance(), "owned_cosmetics": []}
 
 func _load_balance() -> Dictionary:
 	var file: = FileAccess.open("res://assets/balance.json", FileAccess.READ)
@@ -756,9 +772,11 @@ func _load_profile() -> Dictionary:
 	result["level"] = _level_for_xp(int(result["xp"]))
 	result["rank"] = _rank_for_level(int(result["level"]))
 	result.merge(VehicleCatalogScript.sanitize_profile_vehicles(parsed), true)
+	result.merge(CosmeticCatalog.sanitize_profile(parsed), true)
 	return result
 
 func _save_profile() -> bool:
+	profile.merge(CosmeticCatalog.sanitize_profile(profile), true)
 	if test_mode:
 		return true
 	var temporary: String = SAVE_PATH + ".tmp"
@@ -859,6 +877,75 @@ func _nearest_vehicle_owner() -> int:
 			distance = candidate
 			nearest = int(owner_id)
 	return nearest
+
+
+func _can_edit_cosmetics() -> bool:
+	if not _lan_active() and state == "menu":
+		return true
+	return state in ["playing", "paused"] and not player.is_riding() and _near_garage() and (not _lan_active() or lan_session.phase == "playing")
+
+
+func _open_customization() -> void:
+	if not _can_edit_cosmetics():
+		hud.notify("Стиль доступен в профиле перед подключением или в гараже пешком.")
+		return
+	_customization_return_modal = modal
+	modal = "customization"
+	_set_gameplay_controls(false)
+	player.set_mouse_captured(false)
+	hud.show_customization(profile, cosmetic_defs)
+
+
+func _close_customization() -> void:
+	if modal != "customization":
+		return
+	hud.hide_customization()
+	var previous_modal: String = _customization_return_modal
+	_customization_return_modal = ""
+	modal = ""
+	if state == "menu":
+		hud.show_menu(profile)
+	elif state == "paused":
+		hud.show_pause(profile)
+	elif state == "playing" and previous_modal == "garage" and _near_garage() and not player.is_riding():
+		_open_garage()
+	elif state == "playing":
+		_close_modal()
+
+
+func _buy_cosmetic(category: String, item_id: String) -> void:
+	_cosmetic_action(category, item_id, true)
+
+
+func _select_cosmetic(category: String, item_id: String) -> void:
+	_cosmetic_action(category, item_id, false)
+
+
+func _cosmetic_action(category: String, item_id: String, purchasing: bool) -> void:
+	if modal != "customization" or not _can_edit_cosmetics():
+		return
+	if _lan_active():
+		lan_session.request_action("cosmetic_buy" if purchasing else "cosmetic_select", {"category": category, "id": item_id})
+		return
+	var result: Dictionary = CosmeticCatalog.buy(profile, category, item_id) if purchasing else CosmeticCatalog.select(profile, category, item_id)
+	if bool(result.get("changed", false)):
+		_apply_profile_appearance()
+		var saved: bool = _save_profile()
+		hud.update_customization(profile, cosmetic_defs)
+		if purchasing and bool(result.get("ok", false)) and int(CosmeticCatalog.get_item(category, item_id).get("price", 0)) > 0:
+			_play_sound("purchase")
+		if not saved:
+			result["message"] = str(result.get("message", "")) + " Профиль не удалось записать: проверьте папку сохранений."
+	hud.set_customization_notice(str(result.get("message", "")), not bool(result.get("ok", false)))
+
+
+func _apply_profile_appearance() -> void:
+	var appearance: Dictionary = CosmeticCatalog.sanitize_profile(profile)["appearance"]
+	if player != null and is_instance_valid(player) and player.has_method("apply_appearance"):
+		player.apply_appearance(appearance)
+	var owner_id: int = _local_vehicle_owner() if lan_session != null else 0
+	if vehicles.has(owner_id) and is_instance_valid(vehicles[owner_id]):
+		vehicles[owner_id].apply_appearance(appearance)
 
 
 func _open_garage() -> void :
@@ -1024,6 +1111,8 @@ func _upsert_vehicle(owner_id: int, data: Dictionary, force_transform: bool = fa
 	var ids: Array = lan_session.members.keys() if _lan_active() else [0]
 	ids.sort()
 	vehicle.set_network_identity(str(member.get("name", profile.get("player_name", "Courier"))), maxi(0, ids.find(owner_id)))
+	var fallback_appearance: Dictionary = profile.get("appearance", {}) if owner_id == _local_vehicle_owner() else member.get("appearance", {})
+	vehicle.apply_appearance(CosmeticCatalog.normalize_appearance(data.get("appearance", fallback_appearance)))
 	var courier = player if owner_id == _local_vehicle_owner() else remote_players.get(owner_id)
 	if courier != null and is_instance_valid(courier):
 		courier.set_riding_vehicle(vehicle if occupied else null)
@@ -1208,8 +1297,9 @@ func _on_lan_started(data: Dictionary) -> void :
 		if peer_id == lan_session.local_id:
 			player.reset_at(spawn)
 			player.set_network_identity(str(member.get("name", "Courier")), index)
+			player.apply_appearance(CosmeticCatalog.normalize_appearance(member.get("appearance", profile.get("appearance", {}))))
 		else:
-			_spawn_remote_player(peer_id, str(member.get("name", "Courier")), spawn, index)
+			_spawn_remote_player(peer_id, str(member.get("name", "Courier")), spawn, index, CosmeticCatalog.normalize_appearance(member.get("appearance", {})))
 	player.set_view_direction(PI)
 	player.set_controls_enabled(true)
 	player.set_mouse_captured(true)
@@ -1271,12 +1361,15 @@ func _on_lan_state(data: Dictionary) -> void :
 	var previous_deliveries: int = int(shift_stats.get("deliveries", 0))
 	var previous_level: int = int(profile.get("level", 1))
 	var previous_owned: Array = profile.get("owned_vehicles", []).duplicate()
+	var previous_cosmetics: Array = profile.get("owned_cosmetics", []).duplicate()
 	_last_network_revision = revision
 	var prior_order: Dictionary = active_order.duplicate(true)
 	var confirmed: Dictionary = data.get("profile", {})
 	var profile_changed: bool = not confirmed.is_empty() and confirmed != profile
 	if profile_changed:
 		profile = confirmed.duplicate(true)
+		profile.merge(CosmeticCatalog.sanitize_profile(profile), true)
+		_apply_profile_appearance()
 		if not _save_profile():
 			hud.notify("Награда подтверждена, но файл профиля не удалось записать.")
 	shift_stats = data.get("shift_stats", {}).duplicate(true)
@@ -1290,6 +1383,8 @@ func _on_lan_state(data: Dictionary) -> void :
 	active_order = data.get("active_order", {}).duplicate(true)
 	if had_snapshot:
 		_play_confirmed_lan_audio(prior_order, previous_deliveries, previous_level, previous_owned)
+		if previous_cosmetics.size() < profile.get("owned_cosmetics", []).size():
+			_play_sound("purchase")
 	_snapshot_time_msec = Time.get_ticks_msec()
 	_snapshot_remaining = float(data.get("remaining", 900.0))
 	_snapshot_order_remaining = float(active_order.get("remaining", 0.0))
@@ -1302,6 +1397,8 @@ func _on_lan_state(data: Dictionary) -> void :
 	player.set_carrying(carrying)
 	if profile_changed and modal == "garage":
 		hud.update_garage(profile, vehicle_defs)
+	elif profile_changed and modal == "customization":
+		hud.update_customization(profile, cosmetic_defs)
 	if prior_order.get("id", -1) != active_order.get("id", -1) or prior_order.get("state", "") != active_order.get("state", ""):
 		city.clear_objective()
 		if not active_order.is_empty():
@@ -1369,6 +1466,11 @@ func _on_lan_event(event: Dictionary) -> void :
 		var position_value: Variant = event.get("position")
 		if position_value is Vector3:
 			player.correct_network_position(position_value)
+	elif str(event.get("type", "")) == "cosmetic_result":
+		if modal == "customization":
+			hud.set_customization_notice(str(event.get("message", "")), not bool(event.get("ok", false)))
+		else:
+			hud.notify(str(event.get("message", "")))
 	elif event.get("message", "") is String:
 		hud.notify(str(event.get("message", "")))
 
@@ -1385,7 +1487,7 @@ func _on_lan_message(message: String) -> void :
 		hud.notify(message)
 
 
-func _spawn_remote_player(peer_id: int, display_name: String, position_value: Vector3, color_index: int) -> void :
+func _spawn_remote_player(peer_id: int, display_name: String, position_value: Vector3, color_index: int, appearance: Dictionary = {}) -> void :
 	if peer_id <= 0 or peer_id == lan_session.local_id or remote_players.has(peer_id):
 		return
 	var avatar = PlayerScript.new()
@@ -1393,6 +1495,7 @@ func _spawn_remote_player(peer_id: int, display_name: String, position_value: Ve
 	avatar.configure_remote(display_name, color_index)
 	add_child(avatar)
 	avatar.reset_at(position_value)
+	avatar.apply_appearance(CosmeticCatalog.normalize_appearance(appearance))
 	avatar.apply_network_pose({"position": position_value, "yaw": PI, "velocity": Vector3.ZERO, "grounded": true, "carrying": false})
 	remote_players[peer_id] = avatar
 
@@ -1407,6 +1510,7 @@ func _sync_remote_roster(roster: Array) -> void :
 		present[peer_id] = true
 		_spawn_remote_player(peer_id, str(record.get("name", "Courier")), record.get("position", city.spawn_position), index)
 		if remote_players.has(peer_id):
+			remote_players[peer_id].apply_appearance(CosmeticCatalog.normalize_appearance(record.get("appearance", {})))
 			remote_players[peer_id].set_carrying(bool(record.get("carrying", false)))
 	for peer_id in remote_players.keys():
 		if not present.has(peer_id):
@@ -1509,6 +1613,7 @@ func _return_to_main_menu() -> void :
 	city.clear_objective()
 	player.set_carrying(false)
 	player.set_network_identity("", 0)
+	_apply_profile_appearance()
 	player.reset_at(city.spawn_position)
 	player.set_view_direction(PI)
 	player.set_controls_enabled(false)

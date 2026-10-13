@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "categories": {
+    "outfit": [
+      {
+        "id": "classic_blue",
+        "name": "Классический синий",
+        "price": 0,
+        "palette": {
+          "jacket": "#246cdb",
+          "dark": "#164293",
+          "light": "#428ae4",
+          "cap": "#246cdb",
+          "pants": "#213044"
+        }
+      },
+      {
+        "id": "mint",
+        "name": "Мятный курьер",
+        "price": 0,
+        "palette": {
+          "jacket": "#32bca8",
+          "dark": "#17695c",
+          "light": "#a0ecd8",
+          "cap": "#f7df83",
+          "pants": "#293f50"
+        }
+      },
+      {
+        "id": "sunshine",
+        "name": "Солнечная смена",
+        "price": 0,
+        "palette": {
+          "jacket": "#f2b84b",
+          "dark": "#aa6533",
+          "light": "#ffe9a5",
+          "cap": "#f1f4eb",
+          "pants": "#3a4455"
+        }
+      },
+      {
+        "id": "night",
+        "name": "Ночной экспресс",
+        "price": 1500,
+        "palette": {
+          "jacket": "#303b58",
+          "dark": "#1d263e",
+          "light": "#667caa",
+          "cap": "#b8eb91",
+          "pants": "#1b2435"
+        }
+      },
+      {
+        "id": "retro",
+        "name": "Ретро доставка",
+        "price": 2000,
+        "palette": {
+          "jacket": "#dc7659",
+          "dark": "#8b423a",
+          "light": "#ffb395",
+          "cap": "#68c6bc",
+          "pants": "#384f60"
+        }
+      },
+      {
+        "id": "express",
+        "name": "Экспресс про",
+        "price": 2500,
+        "palette": {
+          "jacket": "#8d66cf",
+          "dark": "#4e3784",
+          "light": "#ceb8ff",
+          "cap": "#f7cf60",
+          "pants": "#302947"
+        }
+      }
+    ],
+    "backpack": [
+      {
+        "id": "classic",
+        "name": "Классический рюкзак",
+        "price": 0,
+        "palette": {
+          "style": "classic",
+          "color": "#164293",
+          "trim": "#246cdb"
+        }
+      },
+      {
+        "id": "compact",
+        "name": "Компактный рюкзак",
+        "price": 0,
+        "palette": {
+          "style": "compact",
+          "color": "#2e8b80",
+          "trim": "#b9dfcc"
+        }
+      },
+      {
+        "id": "rolltop",
+        "name": "Рюкзак роллтоп",
+        "price": 750,
+        "palette": {
+          "style": "rolltop",
+          "color": "#e4ab50",
+          "trim": "#8c5b39"
+        }
+      },
+      {
+        "id": "messenger",
+        "name": "Сумка через плечо",
+        "price": 1500,
+        "palette": {
+          "style": "messenger",
+          "color": "#954e61",
+          "trim": "#f0b1a4"
+        }
+      }
+    ],
+    "vehicle_paint": [
+      {
+        "id": "factory",
+        "name": "Заводской цвет",
+        "price": 0,
+        "palette": {
+          "paint": "",
+          "trim": ""
+        }
+      },
+      {
+        "id": "mint",
+        "name": "Мята",
+        "price": 0,
+        "palette": {
+          "paint": "#54c8ad",
+          "trim": "#173e40"
+        }
+      },
+      {
+        "id": "coral",
+        "name": "Коралл",
+        "price": 0,
+        "palette": {
+          "paint": "#e98173",
+          "trim": "#5e3442"
+        }
+      },
+      {
+        "id": "amber",
+        "name": "Янтарь",
+        "price": 750,
+        "palette": {
+          "paint": "#f4bd4c",
+          "trim": "#78542e"
+        }
+      },
+      {
+        "id": "plum",
+        "name": "Слива",
+        "price": 750,
+        "palette": {
+          "paint": "#946aca",
+          "trim": "#382b61"
+        }
+      },
+      {
+        "id": "night",
+        "name": "Полночь",
+        "price": 1000,
+        "palette": {
+          "paint": "#334562",
+          "trim": "#b6cf70"
+        }
+      }
+    ]
+  }
+}

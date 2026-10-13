@@ -14,6 +14,10 @@ signal join_requested(player_name: String, address: String)
 signal ready_requested(ready: bool)
 signal start_requested
 signal leave_requested
+signal customization_requested
+signal customization_closed
+signal cosmetic_select_requested(category: String, id: String)
+signal cosmetic_buy_requested(category: String, id: String)
 signal vehicle_buy_requested(vehicle_type: String)
 signal vehicle_spawn_requested(vehicle_type: String)
 signal garage_closed
@@ -27,6 +31,11 @@ signal handoff_offer_requested(target_id: int)
 signal handoff_accept_requested(sender_id: int, offer_id: int)
 signal handoff_decline_requested(sender_id: int, offer_id: int)
 signal handoff_cancel_requested
+
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
+const CosmeticPreviewScript = preload("res://scripts/cosmetic_preview.gd")
+const COSMETIC_CATEGORIES: Array[String] = ["outfit", "backpack", "vehicle_paint"]
+const COSMETIC_NAMES: Dictionary = {"outfit": "Одежда", "backpack": "Рюкзаки", "vehicle_paint": "Цвет транспорта"}
 
 const INK: Color = Color("243b3a")
 const MUTED: Color = Color("73817c")
@@ -174,8 +183,44 @@ var _map_event_label: Label
 var _event_order_badges: Array[Dictionary] = []
 
 
+var _customization: Control
+var _customization_panel: PanelContainer
+var _customization_body: HBoxContainer
+var _customization_summary: Label
+var _customization_notice: Label
+var _customization_category: String = "outfit"
+var _customization_profile: Dictionary = {}
+var _customization_definitions: Dictionary = {}
+var _customization_candidate: Dictionary = {}
+var _cosmetic_cards: Dictionary = {}
+var _cosmetic_tabs: Dictionary = {}
+var _cosmetic_items: GridContainer
+var _cosmetic_preview: SubViewportContainer
+var _cosmetic_preview_title: Label
+var _cosmetic_preview_hint: Label
+var _cosmetic_rotation: HBoxContainer
+var _cosmetic_vehicle_controls: HBoxContainer
+var _cosmetic_vehicle_preview: VehicleIllustration
+var _cosmetic_preview_vehicle: String = "bicycle"
+var _customization_close: Button
+
+
+class CosmeticSwatch extends Control:
+	var colors: Array[Color] = []
+
+	func _draw() -> void:
+		for index: int in colors.size():
+			var center: Vector2 = Vector2(14.0 + index * 25.0, size.y * 0.5)
+			draw_circle(center, 11.0, colors[index])
+			draw_arc(center, 11.0, 0.0, TAU, 24, Color(0.1, 0.2, 0.17, 0.16), 1.0, true)
+
+
 class VehicleIllustration extends Control:
 	var vehicle_type: String = "bicycle"
+	var paint_color: Color = Color.TRANSPARENT
+
+	func _paint(default_color: Color) -> Color:
+		return paint_color if paint_color.a > 0.0 else default_color
 
 	func _draw() -> void :
 		var scale_factor: float = minf(size.x / 210.0, size.y / 150.0)
@@ -202,7 +247,7 @@ class VehicleIllustration extends Control:
 				var direction: Vector2 = Vector2.RIGHT.rotated(float(spoke) * TAU / 6.0)
 				draw_line(wheel, wheel + direction * 21.0, Color("c5cdc1"), 1.5, true)
 			draw_circle(wheel, 3.0, Color("243b3a"))
-		var frame: Color = Color("247b72")
+		var frame: Color = _paint(Color("247b72"))
 		for pair: Array in [[left, saddle], [saddle, pedal], [pedal, left], [saddle, steering], [steering, pedal], [steering, right]]:
 			draw_line(pair[0], pair[1], frame, 5.0, true)
 			draw_circle(pair[0], 2.5, frame)
@@ -228,14 +273,15 @@ class VehicleIllustration extends Control:
 		draw_circle(center, radius * 0.28, Color("73817c"))
 
 	func _draw_scooter() -> void :
+		var body: Color = _paint(Color("d97559"))
 		_wheel(Vector2(48, 112), 22.0)
 		_wheel(Vector2(164, 112), 22.0)
-		_rounded_rect(Rect2(31, 79, 80, 35), Color("d97559"), 15)
-		_rounded_rect(Rect2(37, 82, 67, 17), Color("eaa082"), 8)
+		_rounded_rect(Rect2(31, 79, 80, 35), body, 15)
+		_rounded_rect(Rect2(37, 82, 67, 17), body.lightened(0.2), 8)
 		_rounded_rect(Rect2(38, 71, 64, 11), Color("243b3a"), 5)
-		draw_polyline(PackedVector2Array([Vector2(99, 105), Vector2(132, 105), Vector2(139, 85), Vector2(135, 60)]), Color("d97559"), 13.0, true)
+		draw_polyline(PackedVector2Array([Vector2(99, 105), Vector2(132, 105), Vector2(139, 85), Vector2(135, 60)]), body, 13.0, true)
 		draw_line(Vector2(145, 81), Vector2(165, 108), Color("243b3a"), 5.0, true)
-		_rounded_rect(Rect2(130, 54, 20, 39), Color("e68b6d"), 8)
+		_rounded_rect(Rect2(130, 54, 20, 39), body.lightened(0.12), 8)
 		draw_line(Vector2(140, 59), Vector2(137, 45), Color("243b3a"), 4.0, true)
 		draw_line(Vector2(127, 44), Vector2(153, 44), Color("243b3a"), 5.0, true)
 		draw_circle(Vector2(151, 59), 8.0, Color("fffaf0"))
@@ -243,16 +289,17 @@ class VehicleIllustration extends Control:
 		draw_line(Vector2(44, 49), Vector2(44, 72), Color("fff1c9"), 4.0, true)
 
 	func _draw_car() -> void :
-		_rounded_rect(Rect2(52, 56, 110, 48), Color("658ed1"), 17)
+		var body: Color = _paint(Color("658ed1"))
+		_rounded_rect(Rect2(52, 56, 110, 48), body, 17)
 		_rounded_rect(Rect2(59, 62, 42, 31), Color("c6e1e0"), 8)
 		_rounded_rect(Rect2(108, 62, 43, 31), Color("c6e1e0"), 8)
 		draw_line(Vector2(65, 69), Vector2(88, 69), Color("fffaf0"), 3.0, true)
 		draw_line(Vector2(114, 69), Vector2(138, 69), Color("fffaf0"), 3.0, true)
-		_rounded_rect(Rect2(21, 85, 172, 37), Color("658ed1"), 14)
-		_rounded_rect(Rect2(27, 94, 157, 8), Color("8cacdd"), 4)
+		_rounded_rect(Rect2(21, 85, 172, 37), body, 14)
+		_rounded_rect(Rect2(27, 94, 157, 8), body.lightened(0.2), 4)
 		_rounded_rect(Rect2(28, 101, 10, 9), Color("e88062"), 3)
 		_rounded_rect(Rect2(177, 97, 10, 11), Color("fff1c9"), 3)
-		draw_line(Vector2(104, 90), Vector2(104, 113), Color("466aa4"), 2.0, true)
+		draw_line(Vector2(104, 90), Vector2(104, 113), body.darkened(0.25), 2.0, true)
 		_rounded_rect(Rect2(112, 96, 14, 3), Color("243b3a"), 1)
 		_rounded_rect(Rect2(17, 114, 13, 5), Color("d5ded6"), 2)
 		_rounded_rect(Rect2(183, 114, 13, 5), Color("d5ded6"), 2)
@@ -594,6 +641,7 @@ func _ready() -> void :
 	_build_map()
 	_build_garage()
 	_build_settings()
+	_build_customization()
 	_build_toast()
 	_resize_scroll_overlays()
 	_hide_layers()
@@ -726,6 +774,10 @@ func _resize_scroll_overlays() -> void :
 		panel.custom_minimum_size.x = scroll.custom_minimum_size.x - 14.0
 	if is_instance_valid(_garage_grid):
 		_garage_grid.columns = 3 if available.x >= 800.0 else (2 if available.x >= 570.0 else 1)
+	if is_instance_valid(_customization_panel):
+		_customization_panel.custom_minimum_size = Vector2(minf(940.0, maxf(320.0, available.x)), minf(600.0, maxf(320.0, available.y)))
+		if is_instance_valid(_cosmetic_items):
+			_cosmetic_items.columns = 2 if available.x >= 790.0 else 1
 	if is_instance_valid(_full_map):
 		# Keep the whole city visible when M opens, including on a 960 × 540 window.
 		_full_map.custom_minimum_size.y = clampf(available.y - 185.0, 260.0, 440.0)
@@ -795,8 +847,16 @@ func _build_menu() -> void :
 	multiplayer_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(multiplayer_button)
 	actions.add_child(_compact_button("Выйти", func() -> void : quit_requested.emit(), true))
+	var profile_actions: HBoxContainer = HBoxContainer.new()
+	profile_actions.add_theme_constant_override("separation", 10)
+	copy.add_child(profile_actions)
+	var style_button: Button = _compact_button("Профиль / стиль", func() -> void: customization_requested.emit(), true)
+	style_button.name = "OpenCustomizationMenu"
+	style_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	profile_actions.add_child(style_button)
 	_menu_settings = _compact_button("Настройки", func() -> void : settings_requested.emit(), true)
-	copy.add_child(_menu_settings)
+	_menu_settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	profile_actions.add_child(_menu_settings)
 	var side: PanelContainer = _card(layout, PAPER)
 	side.custom_minimum_size.x = 340.0
 	var info: VBoxContainer = _vbox(side, 12)
@@ -964,7 +1024,7 @@ func _build_lobby() -> void :
 func _add_roster_row(parent: Node, player_name: String, ready_text: String, career: String, character: String, heading: bool = false) -> void :
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	row.custom_minimum_size.y = 26.0 if heading else 30.0
+	row.custom_minimum_size.y = 26.0 if heading else 42.0
 	parent.add_child(row)
 	var values: Array[String] = [player_name, ready_text, career, character]
 	var widths: Array[float] = [205.0, 115.0, 240.0, 145.0]
@@ -974,6 +1034,9 @@ func _add_roster_row(parent: Node, player_name: String, ready_text: String, care
 		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		cell.clip_text = true
 		cell.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		if not heading:
+			cell.tooltip_text = values[index]
+			cell.mouse_filter = Control.MOUSE_FILTER_PASS
 		if index == 1 and not heading:
 			cell.add_theme_color_override("font_color", TEAL if ready_text == "Готов" else MUTED)
 		row.add_child(cell)
@@ -1594,6 +1657,9 @@ func _build_garage() -> void :
 	var title: Label = _label("Гараж курьера", 30)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
+	var style_button: Button = _compact_button("Стиль", func() -> void: customization_requested.emit(), true)
+	style_button.name = "OpenCustomizationGarage"
+	header.add_child(style_button)
 	header.add_child(_compact_button("Закрыть", _request_close_garage, true))
 	_garage_profile = _label("", 14, MUTED)
 	_garage_profile.add_theme_constant_override("line_spacing", 3)
@@ -1661,7 +1727,7 @@ func _build_vehicle_card(vehicle_type: String) -> void :
 	content.add_child(spawn)
 	spawn.hide()
 	_garage_cards[vehicle_type] = {"panel": card, "category": category, "name": name_label, "description": description, 
-		"specs": specs, "status": status, "buy": buy, "spawn": spawn}
+		"specs": specs, "status": status, "buy": buy, "spawn": spawn, "illustration": illustration}
 
 
 func _request_close_garage() -> void :
@@ -1696,6 +1762,12 @@ func update_garage(profile: Dictionary, definitions: Dictionary) -> void :
 	for vehicle_type: String in VEHICLE_TYPES:
 		var definition: Dictionary = definitions.get(vehicle_type, {})
 		var card: Dictionary = _garage_cards[vehicle_type]
+		var illustration: VehicleIllustration = card["illustration"]
+		var appearance: Dictionary = CosmeticCatalog.normalize_appearance(profile.get("appearance", {}))
+		var paint: Dictionary = CosmeticCatalog.paint_palette(String(appearance.get("vehicle_paint", "factory")))
+		var paint_html: String = String(paint.get("paint", ""))
+		illustration.paint_color = Color(paint_html) if Color.html_is_valid(paint_html) else Color.TRANSPARENT
+		illustration.queue_redraw()
 		var card_panel: PanelContainer = card["panel"]
 		card_panel.visible = not definition.is_empty()
 		if definition.is_empty():
@@ -1754,6 +1826,298 @@ func _vehicle_name(vehicle_type: String, definition: Dictionary = {}) -> String:
 	if display_name.is_empty() or display_name.to_lower() == vehicle_type:
 		return String(VEHICLE_NAMES.get(vehicle_type, "Транспорт"))
 	return display_name
+
+
+func _build_customization() -> void:
+	var items: Array[Control] = _overlay(Vector2(940.0, 600.0))
+	_customization = items[0]
+	_customization.name = "CosmeticCustomization"
+	_customization_panel = items[1]
+	var content: VBoxContainer = _vbox(_customization_panel, 8)
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 12)
+	content.add_child(header)
+	var title: Label = _label("Профиль / стиль", 28)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+	_customization_close = _compact_button("Назад", _request_close_customization, true)
+	_customization_close.name = "CosmeticClose"
+	header.add_child(_customization_close)
+	_customization_summary = _label("", 14, MUTED)
+	_customization_summary.name = "CosmeticProfileSummary"
+	_customization_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_customization_summary)
+	var tabs: HBoxContainer = HBoxContainer.new()
+	tabs.name = "CosmeticTabs"
+	tabs.add_theme_constant_override("separation", 8)
+	content.add_child(tabs)
+	for category: String in COSMETIC_CATEGORIES:
+		var tab: Button = _compact_button(String(COSMETIC_NAMES[category]), func() -> void: _select_customization_category(category), true)
+		tab.name = "CosmeticTab_" + category
+		tab.custom_minimum_size.y = 38.0
+		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tabs.add_child(tab)
+		_cosmetic_tabs[category] = tab
+	_customization_body = HBoxContainer.new()
+	_customization_body.add_theme_constant_override("separation", 14)
+	_customization_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_child(_customization_body)
+	var preview_panel: PanelContainer = _card(_customization_body, PAPER)
+	preview_panel.custom_minimum_size.x = 230.0
+	var preview_style: StyleBoxFlat = _style(PAPER, 14)
+	preview_style.content_margin_left = 10.0
+	preview_style.content_margin_right = 10.0
+	preview_style.content_margin_top = 10.0
+	preview_style.content_margin_bottom = 10.0
+	preview_panel.add_theme_stylebox_override("panel", preview_style)
+	var preview_column: VBoxContainer = _vbox(preview_panel, 6)
+	_cosmetic_preview_title = _label("", 17)
+	_cosmetic_preview_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	preview_column.add_child(_cosmetic_preview_title)
+	_cosmetic_preview = CosmeticPreviewScript.new()
+	_cosmetic_preview.custom_minimum_size = Vector2(200.0, 152.0)
+	_cosmetic_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	preview_column.add_child(_cosmetic_preview)
+	_cosmetic_vehicle_preview = VehicleIllustration.new()
+	_cosmetic_vehicle_preview.name = "CosmeticPaintPreview"
+	_cosmetic_vehicle_preview.custom_minimum_size = Vector2(200.0, 152.0)
+	_cosmetic_vehicle_preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_cosmetic_vehicle_preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview_column.add_child(_cosmetic_vehicle_preview)
+	_cosmetic_vehicle_preview.hide()
+	_cosmetic_rotation = HBoxContainer.new()
+	_cosmetic_rotation.add_theme_constant_override("separation", 6)
+	preview_column.add_child(_cosmetic_rotation)
+	var rotate_left: Button = _compact_button("↶", func() -> void: _cosmetic_preview.rotate_model(-PI * 0.25), true)
+	rotate_left.custom_minimum_size.y = 32.0
+	rotate_left.tooltip_text = "Повернуть курьера влево"
+	rotate_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cosmetic_rotation.add_child(rotate_left)
+	var rotate_right: Button = _compact_button("↷", func() -> void: _cosmetic_preview.rotate_model(PI * 0.25), true)
+	rotate_right.custom_minimum_size.y = 32.0
+	rotate_right.tooltip_text = "Повернуть курьера вправо"
+	rotate_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cosmetic_rotation.add_child(rotate_right)
+	_cosmetic_vehicle_controls = HBoxContainer.new()
+	_cosmetic_vehicle_controls.add_theme_constant_override("separation", 4)
+	preview_column.add_child(_cosmetic_vehicle_controls)
+	for vehicle_type: String in VEHICLE_TYPES:
+		var short_name: String = {"bicycle": "Вело", "scooter": "Скутер", "car": "Авто"}[vehicle_type]
+		var button: Button = _compact_button(short_name, func() -> void: _set_cosmetic_preview_vehicle(vehicle_type), true)
+		button.custom_minimum_size.y = 32.0
+		button.add_theme_font_size_override("font_size", 12)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_cosmetic_vehicle_controls.add_child(button)
+	_cosmetic_vehicle_controls.hide()
+	_cosmetic_preview_hint = _label("", 12, MUTED)
+	_cosmetic_preview_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_cosmetic_preview_hint.custom_minimum_size = Vector2(195.0, 30.0)
+	preview_column.add_child(_cosmetic_preview_hint)
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.name = "CosmeticItemsScroll"
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.follow_focus = true
+	_customization_body.add_child(scroll)
+	_cosmetic_items = GridContainer.new()
+	_cosmetic_items.columns = 2
+	_cosmetic_items.add_theme_constant_override("h_separation", 10)
+	_cosmetic_items.add_theme_constant_override("v_separation", 10)
+	_cosmetic_items.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_cosmetic_items)
+	_customization_notice = _label("Примерьте любой стиль. Покупка или выбор — отдельной кнопкой.", 13, MUTED)
+	_customization_notice.name = "CosmeticNotice"
+	_customization_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_customization_notice.custom_minimum_size.y = 34.0
+	content.add_child(_customization_notice)
+
+
+func show_customization(profile: Dictionary, definitions: Dictionary) -> void:
+	_hide_layers()
+	_customization_candidate = CosmeticCatalog.normalize_appearance(profile.get("appearance", {}))
+	_customization_profile = {}
+	_customization_definitions = {}
+	update_customization(profile, definitions)
+	_customization.show()
+	_resize_scroll_overlays()
+	_hide_current_notice()
+	set_customization_notice("Примерьте любой стиль. Покупка или выбор — отдельной кнопкой.")
+
+
+func hide_customization() -> void:
+	_customization.hide()
+	_flush_pending_notice()
+
+
+func _request_close_customization() -> void:
+	hide_customization()
+	customization_closed.emit()
+
+
+func update_customization(profile: Dictionary, definitions: Dictionary) -> void:
+	var previous: Dictionary = CosmeticCatalog.normalize_appearance(_customization_profile.get("appearance", {}))
+	var appearance: Dictionary = CosmeticCatalog.normalize_appearance(profile.get("appearance", {}))
+	for category: String in COSMETIC_CATEGORIES:
+		# A confirmed purchase/selection replaces only that category's draft.
+		if _customization_profile.is_empty() or previous.get(category) != appearance.get(category):
+			_customization_candidate[category] = appearance[category]
+	_customization_profile = profile.duplicate(true)
+	_profile = profile.duplicate(true)
+	var rebuild: bool = _customization_definitions != definitions or _cosmetic_cards.is_empty()
+	_customization_definitions = definitions.duplicate(true)
+	_customization_summary.text = "%s · уровень %d · %s ₽" % [String(profile.get("player_name", "Курьер")), int(profile.get("level", 1)), _amount(int(profile.get("money", 0)))]
+	_menu_profile.text = _profile_line(profile)
+	if rebuild:
+		_rebuild_cosmetic_items()
+	_update_cosmetic_cards()
+	_update_cosmetic_preview()
+
+
+func set_customization_notice(message: String, error: bool = false) -> void:
+	_customization_notice.text = message
+	_customization_notice.add_theme_color_override("font_color", Color("a64f35") if error else TEAL)
+
+
+func _select_customization_category(category: String) -> void:
+	if not category in COSMETIC_CATEGORIES:
+		return
+	_customization_category = category
+	_rebuild_cosmetic_items()
+	_cosmetic_preview.show_back(category == "backpack")
+	_update_cosmetic_cards()
+	_update_cosmetic_preview()
+
+
+func _rebuild_cosmetic_items() -> void:
+	for child: Node in _cosmetic_items.get_children():
+		_cosmetic_items.remove_child(child)
+		child.queue_free()
+	_cosmetic_cards.clear()
+	var items: Array = _customization_definitions.get(_customization_category, [])
+	for value: Variant in items:
+		if not value is Dictionary:
+			continue
+		var item: Dictionary = value
+		var id: String = String(item.get("id", ""))
+		var category: String = _customization_category
+		if id.is_empty():
+			continue
+		var panel: PanelContainer = _card(_cosmetic_items, PAPER)
+		panel.name = "CosmeticItem_" + category + "_" + id
+		panel.set_meta("category", category)
+		panel.set_meta("item_id", id)
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var column: VBoxContainer = _vbox(panel, 5)
+		var name_button: Button = _compact_button(String(item.get("name", id)), func() -> void: _preview_cosmetic(category, id), true)
+		name_button.name = "CosmeticPreview_" + id
+		name_button.custom_minimum_size.y = 32.0
+		name_button.add_theme_font_size_override("font_size", 15)
+		name_button.tooltip_text = "Примерить: " + String(item.get("name", id))
+		column.add_child(name_button)
+		var swatch: CosmeticSwatch = CosmeticSwatch.new()
+		swatch.custom_minimum_size.y = 24.0
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var palette: Dictionary = item.get("palette", {})
+		for color_value: Variant in palette.values():
+			if color_value is String and Color.html_is_valid(color_value):
+				var color: Color = Color(color_value)
+				if not swatch.colors.has(color) and swatch.colors.size() < 3:
+					swatch.colors.append(color)
+		if swatch.colors.is_empty():
+			swatch.colors = [TEAL, Color("d97559"), Color("658ed1")]
+		column.add_child(swatch)
+		var status: Label = _label("", 12, MUTED)
+		status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		status.custom_minimum_size.y = 17.0
+		column.add_child(status)
+		var action: Button = _compact_button("", func() -> void: _request_cosmetic_action(category, id))
+		action.name = "CosmeticAction_" + id
+		action.custom_minimum_size.y = 36.0
+		column.add_child(action)
+		_cosmetic_cards[id] = {"panel": panel, "status": status, "action": action, "preview": name_button, "item": item}
+
+
+func _update_cosmetic_cards() -> void:
+	var appearance: Dictionary = CosmeticCatalog.normalize_appearance(_customization_profile.get("appearance", {}))
+	var money: int = int(_customization_profile.get("money", 0))
+	for category: String in COSMETIC_CATEGORIES:
+		var tab: Button = _cosmetic_tabs[category]
+		var active: bool = category == _customization_category
+		tab.add_theme_stylebox_override("normal", _style(TEAL if active else PAPER, 10))
+		tab.add_theme_color_override("font_color", CREAM if active else INK)
+	for id: String in _cosmetic_cards:
+		var card: Dictionary = _cosmetic_cards[id]
+		var item: Dictionary = card["item"]
+		var price: int = maxi(0, int(item.get("price", 0)))
+		var owned: bool = CosmeticCatalog.owns(_customization_profile, _customization_category, id)
+		var selected: bool = String(appearance.get(_customization_category, "")) == id
+		var candidate: bool = String(_customization_candidate.get(_customization_category, "")) == id
+		var status: Label = card["status"]
+		status.text = "Выбрано · бесплатно" if selected and price == 0 else ("Выбрано · куплено" if selected else ("Бесплатно · доступно" if price == 0 else ("Куплено · доступно" if owned else "Стоимость: %s ₽" % _amount(price))))
+		status.add_theme_color_override("font_color", TEAL if selected else MUTED)
+		var action: Button = card["action"]
+		action.text = "Выбрано" if selected else ("Выбрать" if owned else "Купить · %s ₽" % _amount(price))
+		action.disabled = selected or (not owned and money < price)
+		action.tooltip_text = "Не хватает %s ₽" % _amount(price - money) if not owned and money < price else ""
+		var panel: PanelContainer = card["panel"]
+		panel.set_meta("selected", selected)
+		panel.set_meta("owned", owned)
+		panel.set_meta("candidate", candidate)
+		var style: StyleBoxFlat = _style(Color("e0ece0") if selected else PAPER, 12)
+		style.content_margin_left = 12.0
+		style.content_margin_right = 12.0
+		style.content_margin_top = 9.0
+		style.content_margin_bottom = 9.0
+		if selected or candidate:
+			style.border_color = TEAL if selected else GOLD
+			style.set_border_width_all(2)
+		panel.add_theme_stylebox_override("panel", style)
+
+
+func _preview_cosmetic(category: String, id: String) -> void:
+	if category != _customization_category or CosmeticCatalog.get_item(category, id).is_empty():
+		return
+	_customization_candidate[category] = id
+	_update_cosmetic_cards()
+	_update_cosmetic_preview()
+
+
+func _request_cosmetic_action(category: String, id: String) -> void:
+	# Only identifiers leave this page; the Host/offline catalog resolves the cost.
+	if CosmeticCatalog.owns(_customization_profile, category, id):
+		cosmetic_select_requested.emit(category, id)
+	else:
+		cosmetic_buy_requested.emit(category, id)
+
+
+func _update_cosmetic_preview() -> void:
+	var paint_category: bool = _customization_category == "vehicle_paint"
+	_cosmetic_preview.visible = not paint_category
+	_cosmetic_rotation.visible = not paint_category
+	_cosmetic_vehicle_preview.visible = paint_category
+	_cosmetic_vehicle_controls.visible = paint_category
+	_cosmetic_preview.apply_appearance(_customization_candidate)
+	var item: Dictionary = CosmeticCatalog.get_item(_customization_category, String(_customization_candidate.get(_customization_category, "")))
+	_cosmetic_preview_title.text = String(item.get("name", "Стиль курьера"))
+	var appearance: Dictionary = CosmeticCatalog.normalize_appearance(_customization_profile.get("appearance", {}))
+	var draft: bool = _customization_candidate != appearance
+	_cosmetic_preview_hint.text = "Примерка · ещё не выбрано" if draft else "Ваш выбранный стиль"
+	if paint_category:
+		_cosmetic_preview_hint.text = "Один цвет для всего транспорта. Транспорт покупается отдельно."
+	var paint: Dictionary = CosmeticCatalog.paint_palette(String(_customization_candidate.get("vehicle_paint", "factory")))
+	var html: String = String(paint.get("paint", ""))
+	_cosmetic_vehicle_preview.paint_color = Color(html) if Color.html_is_valid(html) else Color.TRANSPARENT
+	_cosmetic_vehicle_preview.vehicle_type = _cosmetic_preview_vehicle
+	_cosmetic_vehicle_preview.queue_redraw()
+
+
+func _set_cosmetic_preview_vehicle(vehicle_type: String) -> void:
+	if vehicle_type in VEHICLE_TYPES:
+		_cosmetic_preview_vehicle = vehicle_type
+		_update_cosmetic_preview()
 
 
 func _build_settings() -> void :
@@ -2041,7 +2405,7 @@ func _build_toast() -> void :
 
 
 func _hide_layers() -> void :
-	for layer_control: Control in [_menu, _game, _pause, _results, _orders, _map, _lan_menu, _lobby, _garage, _settings]:
+	for layer_control: Control in [_menu, _game, _pause, _results, _orders, _map, _lan_menu, _lobby, _garage, _settings, _customization]:
 		layer_control.hide()
 
 
@@ -2056,6 +2420,9 @@ func _profile_line(profile: Dictionary) -> String:
 		var selected: String = String(profile.get("selected_vehicle", ""))
 		if _owns_vehicle(profile, selected):
 			summary += "\nВыбран: " + _vehicle_name(selected).to_lower()
+	var appearance: Dictionary = CosmeticCatalog.normalize_appearance(profile.get("appearance", {}))
+	var outfit: Dictionary = CosmeticCatalog.get_item("outfit", String(appearance.get("outfit", "classic_blue")))
+	summary += "\nСтиль: " + String(outfit.get("name", "Классический синий"))
 	return summary
 
 
@@ -2146,7 +2513,10 @@ func show_lobby(data: Dictionary, is_host: bool) -> void :
 			member_name += " · Host"
 		var career: String = "%d · %s" % [int(member.get("level", member_profile.get("level", 1))), String(member.get("rank", member_profile.get("rank", "Rookie Courier")))]
 		var selected: String = String(member_profile.get("selected_vehicle", "walking"))
-		var character: String = "Курьер · " + (_vehicle_name(selected).to_lower() if _owns_vehicle(member_profile, selected) else "пешком")
+		var appearance: Dictionary = CosmeticCatalog.normalize_appearance(member_profile.get("appearance", member.get("appearance", {})))
+		var outfit: Dictionary = CosmeticCatalog.get_item("outfit", String(appearance.get("outfit", "classic_blue")))
+		var backpack: Dictionary = CosmeticCatalog.get_item("backpack", String(appearance.get("backpack", "classic")))
+		var character: String = String(outfit.get("name", "Курьер")) + "\n" + String(backpack.get("name", "Рюкзак")) + " · " + (_vehicle_name(selected).to_lower() if _owns_vehicle(member_profile, selected) else "пешком")
 		_add_roster_row(_lobby_players, member_name, "Готов" if bool(member.get("ready", false)) else "Ожидает", career, character)
 	_lobby_ready.set_pressed_no_signal(own_ready)
 	_lobby_ready.disabled = not own_member_found
@@ -2190,6 +2560,7 @@ func show_pause(profile: Dictionary) -> void :
 	_map.hide()
 	_garage.hide()
 	_settings.hide()
+	_customization.hide()
 	_pause_profile.text = _profile_line(profile)
 	_pause.show()
 	_hide_current_notice()
@@ -2401,7 +2772,7 @@ func _queue_notice(message: String) -> void :
 
 
 func _has_blocking_overlay() -> bool:
-	return _orders.visible or _map.visible or _pause.visible or _results.visible or _lan_menu.visible or _lobby.visible or _garage.visible or _settings.visible
+	return _orders.visible or _map.visible or _pause.visible or _results.visible or _lan_menu.visible or _lobby.visible or _garage.visible or _settings.visible or _customization.visible
 
 
 func _hide_current_notice() -> void :

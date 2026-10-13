@@ -6,6 +6,7 @@ signal event_ready(peer_id: int, event: Dictionary)
 signal pose_ready(peer_id: int, pose: Dictionary)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const VehiclePlacement = preload("res://scripts/vehicle_placement.gd")
 const FragileRules = preload("res://scripts/fragile_rules.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
@@ -154,6 +155,10 @@ func handle_request(peer_id: int, action: String, payload: Dictionary) -> void :
 			_abandon_order(peer_id)
 		"pose":
 			_accept_pose(peer_id, payload)
+		"cosmetic_buy":
+			_cosmetic_request(peer_id, payload, true)
+		"cosmetic_select":
+			_cosmetic_request(peer_id, payload, false)
 		"vehicle_buy":
 			_buy_vehicle(peer_id, payload)
 		"vehicle_spawn":
@@ -657,6 +662,25 @@ func _award_team_bonuses() -> void:
 		_notice(peer_id, "Командный план выполнен! Ваш бонус: +%d ₽ · +%d XP." % [money, xp])
 
 
+func _cosmetic_request(peer_id: int, payload: Dictionary, purchasing: bool) -> void:
+	var record: Dictionary = records[peer_id]
+	var result: Dictionary
+	if _is_riding(record) or not VehiclePlacement.can_use_garage(record["position"], _world):
+		result = {"ok": false, "changed": false, "message": "Для смены стиля подойдите к гаражу пешком."}
+	else:
+		var category: Variant = payload.get("category")
+		var item_id: Variant = payload.get("id")
+		result = CosmeticCatalog.buy(record["profile"], category, item_id) if purchasing else CosmeticCatalog.select(record["profile"], category, item_id)
+	if bool(result.get("changed", false)):
+		var vehicle: Dictionary = record.get("vehicle", {})
+		if not vehicle.is_empty():
+			vehicle["appearance"] = CosmeticCatalog.sanitize_profile(record["profile"])["appearance"]
+		_mark_changed()
+	event_ready.emit(peer_id, {"type": "cosmetic_result", "session_id": session_id,
+		"ok": bool(result.get("ok", false)), "changed": bool(result.get("changed", false)),
+		"message": str(result.get("message", ""))})
+
+
 func _buy_vehicle(peer_id: int, payload: Dictionary) -> void :
 	var record: Dictionary = records[peer_id]
 	var vehicle_id: String = _requested_vehicle_id(peer_id, payload)
@@ -810,7 +834,8 @@ func _new_vehicle(peer_id: int, vehicle_id: String, position: Vector3, yaw: floa
 	_reset_impact_history(records[peer_id])
 	return {
 		"owner_id": peer_id, "type": vehicle_id, "generation": generation, "position": position, "yaw": yaw, "occupied": false, 
-		"velocity": Vector3.ZERO, "grounded": true, "carrying": false
+		"velocity": Vector3.ZERO, "grounded": true, "carrying": false,
+		"appearance": CosmeticCatalog.sanitize_profile(records[peer_id]["profile"])["appearance"]
 	}
 
 
@@ -1149,6 +1174,7 @@ func _public_players() -> Array[Dictionary]:
 			"id": int(peer_id), "name": record["name"], "level": int(profile["level"]), "rank": str(profile["rank"]), 
 			"position": record["position"], "carrying": bool(record["carrying"]), "connected": bool(record["connected"]), 
 			"active_vehicle": _active_vehicle_type(record),
+			"appearance": CosmeticCatalog.sanitize_profile(profile)["appearance"],
 			"has_order": not record["active_order"].is_empty(),
 			"order_state": str(record["active_order"].get("state", ""))
 		})
@@ -1161,7 +1187,9 @@ func _public_vehicles() -> Array[Dictionary]:
 		var record: Dictionary = records[peer_id]
 		var vehicle: Dictionary = record.get("vehicle", {})
 		if bool(record.get("connected", false)) and not vehicle.is_empty():
-			vehicles.append(vehicle.duplicate(true))
+			var public_vehicle: Dictionary = vehicle.duplicate(true)
+			public_vehicle["appearance"] = CosmeticCatalog.sanitize_profile(record["profile"])["appearance"]
+			vehicles.append(public_vehicle)
 	return vehicles
 
 
@@ -1223,6 +1251,7 @@ func _sanitize_profile(source: Dictionary) -> Dictionary:
 	profile["level"] = _level_for_xp(int(profile["xp"]))
 	profile["rank"] = _rank_for_level(int(profile["level"]))
 	profile.merge(VehicleCatalog.sanitize_profile_vehicles(source))
+	profile.merge(CosmeticCatalog.sanitize_profile(source), true)
 	return profile
 
 
