@@ -34,6 +34,8 @@ const CREAM: Color = Color("fffaf0")
 const PAPER: Color = Color("eee8d9")
 const TEAL: Color = Color("247b72")
 const GOLD: Color = Color("e8b653")
+const EVENT_ORANGE: Color = Color("ad571f")
+const EVENT_PAPER: Color = Color("fff0d9")
 const VEHICLE_TYPES: Array[String] = ["bicycle", "scooter", "car"]
 const VEHICLE_NAMES: Dictionary = {"walking": "Пешком", "bicycle": "Велосипед", "scooter": "Скутер", "car": "Автомобиль"}
 const VEHICLE_DESCRIPTIONS: Dictionary = {
@@ -161,6 +163,15 @@ var _handoff_signature: String = ""
 var _handoff_timers: Array[Dictionary] = []
 var _results_team: PanelContainer
 var _results_team_text: Label
+var _event_panel: PanelContainer
+var _event_title: Label
+var _event_detail: Label
+var _event_bonus: Label
+var _orders_event_panel: PanelContainer
+var _orders_event_text: Label
+var _order_event_hint: Label
+var _map_event_label: Label
+var _event_order_badges: Array[Dictionary] = []
 
 
 class VehicleIllustration extends Control:
@@ -267,6 +278,7 @@ class MapView extends Control:
 	var player_yaw: float = 0.0
 	var walk_last: bool = false
 	var target_picked: bool = false
+	var district_event: Dictionary = {}
 	const MINI_SPAN: float = 128.0
 	const PLAYER_COLORS: Array[Color] = [Color("e88062"), Color("658ed1"), Color("ae78b3"), Color("82a962")]
 
@@ -295,6 +307,26 @@ class MapView extends Control:
 	func update_other_players(players: Array) -> void:
 		other_players = players.duplicate(true)
 		queue_redraw()
+
+	func update_district_event(value: Dictionary) -> void:
+		district_event = value.duplicate(true)
+		queue_redraw()
+
+	func _draw_event_district() -> void:
+		if String(district_event.get("phase", "")) != "active":
+			return
+		var active_id: String = String(district_event.get("district_id", ""))
+		for entry: Dictionary in layout.get("districts", []):
+			if String(entry.get("id", "")) != active_id:
+				continue
+			var box: Rect2 = _rect(entry.get("rect", Rect2()))
+			if not box.has_area():
+				continue
+			# Highlight the district under route, markers and labels, never cover navigation.
+			draw_rect(box, Color(1.0, 0.59, 0.19, 0.10))
+			draw_rect(box.grow(-1.0), Color("c16d2a"), false, 3.0 if large else 1.5)
+			if not large:
+				draw_circle(box.position + Vector2(6.0, 6.0), 4.0, Color("c16d2a"))
 
 	func _world_bounds() -> Rect2:
 		return layout.get("bounds", Rect2(-258.0, -258.0, 516.0, 516.0))
@@ -454,6 +486,7 @@ class MapView extends Control:
 			if _visible(position):
 				var radius: float = float(fountain.get("radius", 5.3)) * _map_rect().size.x / _view_bounds().size.x
 				draw_circle(_point(position), radius, Color("69bdca"))
+		_draw_event_district()
 		if large:
 			_draw_district_labels()
 		for pickup: Dictionary in layout.get("pickups", []):
@@ -971,6 +1004,12 @@ func _build_game() -> void :
 	_navigation_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_navigation_hint.custom_minimum_size.x = 280.0
 	content.add_child(_navigation_hint)
+	_order_event_hint = _label("", 12, EVENT_ORANGE)
+	_order_event_hint.name = "ActiveOrderEventHint"
+	_order_event_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_order_event_hint.custom_minimum_size.x = 280.0
+	content.add_child(_order_event_hint)
+	_order_event_hint.hide()
 	_order_quality = _vbox(content, 4)
 	_quality_text = _label("Состояние посылки · 100%", 13, TEAL)
 	_order_quality.add_child(_quality_text)
@@ -1022,6 +1061,7 @@ func _build_game() -> void :
 	_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	clock.add_child(_timer)
 	_build_team_progress()
+	_build_district_event()
 	_deliveries = _label("Доставлено: 0", 13, CREAM)
 	_deliveries.add_theme_color_override("font_outline_color", INK)
 	_deliveries.add_theme_constant_override("outline_size", 3)
@@ -1058,6 +1098,101 @@ func _build_game() -> void :
 
 
 
+func _build_district_event() -> void:
+	_event_panel = _card(_game, EVENT_PAPER)
+	_event_panel.name = "DistrictEventBanner"
+	_event_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_event_panel.offset_left = -130.0
+	_event_panel.offset_right = 130.0
+	_event_panel.offset_top = 92.0
+	_event_panel.offset_bottom = 178.0
+	var box: StyleBoxFlat = _style(EVENT_PAPER, 14)
+	box.content_margin_left = 12.0
+	box.content_margin_right = 12.0
+	box.content_margin_top = 10.0
+	box.content_margin_bottom = 10.0
+	box.border_color = Color("e1b778")
+	box.set_border_width_all(1)
+	_event_panel.add_theme_stylebox_override("panel", box)
+	var content: VBoxContainer = _vbox(_event_panel, 3)
+	_event_title = _label("", 14, EVENT_ORANGE)
+	_event_title.name = "DistrictEventTitle"
+	_event_title.custom_minimum_size.x = 220.0
+	_event_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_event_title)
+	_event_detail = _label("", 12, MUTED)
+	_event_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_event_detail)
+	_event_bonus = _label("", 12, EVENT_ORANGE)
+	_event_bonus.name = "DistrictEventBonus"
+	_event_bonus.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_event_bonus)
+	_event_panel.hide()
+	_ignore_mouse(_event_panel)
+
+
+func _position_district_event() -> void:
+	if not is_instance_valid(_event_panel) or not is_instance_valid(_team_panel):
+		return
+	var top: float = _team_panel.offset_top + maxf(_team_panel.size.y, _team_panel.get_combined_minimum_size().y) + 10.0 if _team_panel.visible else 92.0
+	_event_panel.offset_top = top
+	_event_panel.offset_bottom = top + 86.0
+
+
+func _event_percent(multiplier: float) -> int:
+	return maxi(0, roundi((multiplier - 1.0) * 100.0)) if is_finite(multiplier) else 0
+
+
+func _update_district_event(data: Dictionary) -> void:
+	var event: Dictionary = data.get("district_event", {})
+	var phase: String = String(event.get("phase", "ended"))
+	var active: bool = phase == "active"
+	var waiting: bool = phase in ["waiting", "cooldown"] and float(event.get("starts_in", 0.0)) > 0.0
+	_event_panel.visible = active or waiting
+	_orders_event_panel.visible = active or waiting
+	var name_value: String = String(event.get("name", "Обеденный час"))
+	var district_name: String = String(event.get("district_name", "Деловой центр"))
+	var percent: int = _event_percent(float(event.get("bonus_multiplier", 1.5)))
+	var countdown: String = _time(float(event.get("remaining", 0.0))) if active else _time(float(event.get("starts_in", 0.0)))
+	_event_title.text = "%s · %s" % [name_value, countdown] if active else "Событие через " + countdown
+	_event_detail.text = district_name if active else "%s · %s" % [name_value, district_name]
+	_event_bonus.text = "+%d%% за доставку вовремя · Tab" % percent
+	_event_bonus.visible = active
+	_orders_event_text.text = "%s · %s · осталось %s\nКафе → офисы: +%d%% к базовой награде, если доставить до конца события." % [name_value, district_name, countdown, percent] if active else "%s начнётся через %s · %s. Короткие доставки кафе → офисы с бонусом +%d%%." % [name_value, countdown, district_name, percent]
+	_position_district_event()
+	_mini_map.update_district_event(event)
+	_full_map.update_district_event(event)
+	_map_event_label.text = "▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть\nОранжевый контур: %s · %s · %s · +%d%% вовремя." % [name_value, district_name, countdown, percent] if active else "▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть\nМини-карта показывает соседние улицы; здесь — весь город и его районы."
+	var order_event: Dictionary = data.get("order_event", {})
+	var was_visible: bool = _order_event_hint.visible
+	_order_event_hint.visible = _has_active_order and not String(order_event.get("id", "")).is_empty()
+	if _order_event_hint.visible:
+		var bonus_available: bool = bool(order_event.get("bonus_available", false))
+		var order_name: String = String(order_event.get("name", name_value))
+		var bonus: int = maxi(0, int(order_event.get("bonus_money", 0)))
+		_order_event_hint.text = "%s · %s · +%s ₽ вовремя" % [order_name, _time(float(order_event.get("remaining", 0.0))), _amount(bonus)] if bonus_available else "%s завершён · обычная награда" % order_name
+	else:
+		_order_event_hint.text = ""
+	if was_visible != _order_event_hint.visible:
+		_active_order_panel.reset_size.call_deferred()
+	_update_event_order_badges(event)
+
+
+func _update_event_order_badges(event: Dictionary) -> void:
+	for entry: Dictionary in _event_order_badges:
+		var label: Label = entry["label"]
+		if not is_instance_valid(label):
+			continue
+		var order_id: String = String(entry.get("id", ""))
+		var current: bool = String(event.get("phase", "")) == "active" and String(event.get("id", "")) == order_id
+		var remaining: float = maxf(0.0, float(event.get("remaining", 0.0))) if current else maxf(0.0, float(entry.get("remaining", 0.0)))
+		# Snapshot phase closes the current cycle. Never guess the deadline from a client wall clock.
+		var available: bool = current and remaining > 0.0 and bool(entry.get("available", false))
+		label.text = "%s · %s · +%s ₽ вовремя" % [String(entry.get("name", "Обеденный час")), _time(remaining), _amount(int(entry.get("bonus", 0)))] if available else "%s · обычная награда после события" % String(entry.get("name", "Обеденный час"))
+		label.set_meta("event_bonus_available", available)
+		label.set_meta("event_remaining", remaining if available else 0.0)
+
+
 func _build_team_progress() -> void:
 	_team_panel = _card(_game)
 	_team_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
@@ -1083,6 +1218,7 @@ func _build_team_progress() -> void:
 	content.add_child(_team_message)
 	_team_panel.hide()
 	_ignore_mouse(_team_panel)
+	_team_panel.resized.connect(_position_district_event)
 
 
 func _team_goal_text(team: Dictionary) -> String:
@@ -1399,6 +1535,12 @@ func _build_orders() -> void :
 	_orders_hint = _label("Выберите маршрут и отправляйтесь к точке получения.", 14, MUTED)
 	_orders_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_orders_hint)
+	_orders_event_panel = _card(content, EVENT_PAPER)
+	_orders_event_panel.name = "DistrictEventOrdersSummary"
+	_orders_event_text = _label("", 13, EVENT_ORANGE)
+	_orders_event_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_orders_event_panel.add_child(_orders_event_text)
+	_orders_event_panel.hide()
 	_handoff_panel = _card(content, PAPER)
 	_handoff_rows = _vbox(_handoff_panel, 8)
 	_handoff_panel.hide()
@@ -1432,9 +1574,10 @@ func _build_map() -> void :
 	_full_map.custom_minimum_size = Vector2(580, 440)
 	_full_map.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	content.add_child(_full_map)
-	var legend: Label = _label("▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть\nМини-карта показывает соседние улицы; здесь — весь город и его районы.", 12, MUTED)
-	legend.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	content.add_child(legend)
+	_map_event_label = _label("▲ Вы · ● Получение / доставка · ■ Гараж · пунктир — пешком · M — закрыть\nМини-карта показывает соседние улицы; здесь — весь город и его районы.", 12, MUTED)
+	_map_event_label.name = "DistrictEventMapLegend"
+	_map_event_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_map_event_label)
 	_map_route_label = _label("", 13, TEAL)
 	_map_route_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_map_route_label)
@@ -2073,14 +2216,25 @@ func show_results(stats: Dictionary, leaderboard: Array = []) -> void :
 
 func set_orders(orders: Array[Dictionary]) -> void :
 	_accept_buttons.clear()
+	_event_order_badges.clear()
 	for child: Node in _orders_list.get_children():
 		_orders_list.remove_child(child)
 		child.queue_free()
 	if orders.is_empty():
 		_orders_list.add_child(_label("Сейчас доступных заказов нет.", 17, MUTED))
 		return
+	# Put the live district offers first for Tab; keep the shared authority list unchanged.
+	var displayed: Array[Dictionary] = []
 	for order: Dictionary in orders:
-		var card: PanelContainer = _card(_orders_list, PAPER)
+		if not String(order.get("event_id", "")).is_empty() and bool(order.get("event_bonus_available", false)):
+			displayed.append(order)
+	for order: Dictionary in orders:
+		if String(order.get("event_id", "")).is_empty() or not bool(order.get("event_bonus_available", false)):
+			displayed.append(order)
+	for order: Dictionary in displayed:
+		var event_id: String = String(order.get("event_id", ""))
+		var card: PanelContainer = _card(_orders_list, EVENT_PAPER if not event_id.is_empty() else PAPER)
+		card.set_meta("district_event_id", event_id)
 		card.mouse_filter = Control.MOUSE_FILTER_PASS
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 20)
@@ -2091,6 +2245,14 @@ func set_orders(orders: Array[Dictionary]) -> void :
 		card_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		card_title.custom_minimum_size.x = 180.0
 		details.add_child(card_title)
+		if not event_id.is_empty():
+			var badge: Label = _label("", 12, EVENT_ORANGE)
+			badge.name = "DistrictEventBadge"
+			badge.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			badge.set_meta("district_event_badge", true)
+			badge.set_meta("event_id", event_id)
+			details.add_child(badge)
+			_event_order_badges.append({"label": badge, "id": event_id, "name": String(order.get("event_name", "Обеденный час")), "remaining": float(order.get("event_remaining", 0.0)), "available": bool(order.get("event_bonus_available", false)), "bonus": maxi(0, int(order.get("event_bonus_money", order.get("event_bonus", 0))))})
 		var route: Label = _label("%s → %s" % [String(order.get("pickup_name", "")), String(order.get("delivery_name", ""))], 13, MUTED)
 		route.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		details.add_child(route)
@@ -2123,6 +2285,7 @@ func set_orders(orders: Array[Dictionary]) -> void :
 		button.disabled = locked or _has_active_order
 		_accept_buttons.append(button)
 		action.add_child(button)
+	_update_event_order_badges(_last_data.get("district_event", {}))
 
 
 func show_orders(visible: bool) -> void :
@@ -2185,6 +2348,7 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 
 	_update_order_quality(data)
 	_update_team_hud(data)
+	_update_district_event(data)
 	_deliveries.text = "Доставлено: %d" % int(data.get("deliveries", 0))
 	var active_vehicle: String = String(data.get("active_vehicle", "walking"))
 	var riding: bool = active_vehicle in VEHICLE_TYPES

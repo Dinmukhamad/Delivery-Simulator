@@ -13,8 +13,9 @@ const SettingsService = preload("res://scripts/settings_service.gd")
 const AudioManagerScript = preload("res://scripts/audio_manager.gd")
 const NavigationService = preload("res://scripts/navigation_service.gd")
 const CityOrderRules = preload("res://scripts/city_order_rules.gd")
+const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.11.0"
+const DEMO_VERSION: = "0.12.0"
 
 var city
 var player
@@ -22,6 +23,14 @@ var hud
 var profile: Dictionary = {}
 var balance: Dictionary = {}
 var city_order_config: Dictionary = {}
+var district_event_config: Dictionary = {}
+var _solo_elapsed_seconds: float = 0.0
+var _solo_event_phase: String = "ended"
+var _solo_event_id: String = ""
+var _solo_event_delivered: int = 0
+var _solo_event_bonus_money: int = 0
+var _network_district_event: Dictionary = {}
+var _network_order_event: Dictionary = {}
 var orders: Array[Dictionary] = []
 var active_order: Dictionary = {}
 var state: String = "menu"
@@ -56,6 +65,7 @@ func _ready() -> void :
 	_define_input()
 	balance = _load_balance()
 	city_order_config = CityOrderRules.load_config()
+	district_event_config = DistrictEventRules.load_config()
 	vehicle_defs = VehicleCatalogScript.load_definitions()
 	profile = _load_profile()
 	city = WorldScript.new()
@@ -163,7 +173,9 @@ func _process(delta: float) -> void :
 			_update_hud()
 		return
 	if state == "playing":
+		_solo_elapsed_seconds += minf(maxf(delta, 0.0), maxf(shift_remaining, 0.0))
 		shift_remaining = maxf(0.0, shift_remaining - delta)
+		_advance_solo_event()
 		if not active_order.is_empty() and active_order.get("type", "standard") == "express":
 			active_order["remaining"] = maxf(0.0, float(active_order["remaining"]) - delta)
 			if float(active_order["remaining"]) <= 0.0:
@@ -229,6 +241,11 @@ func _begin_shift() -> void :
 		_record_best_shift()
 	_clear_vehicles()
 	shift_remaining = float(balance.get("shift_seconds", 900))
+	_solo_elapsed_seconds = 0.0
+	_solo_event_phase = "waiting"
+	_solo_event_id = "lunch_rush:1"
+	_solo_event_delivered = 0
+	_solo_event_bonus_money = 0
 	_reset_shift_stats()
 	active_order.clear()
 	if navigation != null:
@@ -236,6 +253,8 @@ func _begin_shift() -> void :
 	orders.clear()
 	_network_team.clear()
 	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	player.set_carrying(false)
 	player.reset_at(city.spawn_position)
 	_spawn_owned_vehicle_at_start()
@@ -251,7 +270,7 @@ func _begin_shift() -> void :
 	hud.notify("Выберите заказ, заберите коробку и доставьте ее по адресу.")
 
 func _reset_shift_stats() -> void :
-	shift_stats = {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0}
+	shift_stats = {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0, "event_deliveries": 0, "event_bonus_money": 0}
 
 func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
 	var couriers: Array = [{"profile": profile, "position": player.position}]
@@ -260,17 +279,85 @@ func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
 		next_order_id += 1
 	return order
 
-func _fill_orders(first: bool = false) -> void :
+func _district_event_view() -> Dictionary:
+	if _lan_active():
+		var event: Dictionary = _network_district_event.duplicate(true)
+		if event.is_empty():
+			return {}
+		var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+		# Client prediction changes presentation only; the Host owns phase transitions.
+		if str(event.get("phase", "")) == "active":
+			event["remaining"] = maxf(0.0, float(event.get("remaining", 0.0)) - elapsed)
+		elif str(event.get("phase", "")) in ["waiting", "cooldown"]:
+			event["starts_in"] = maxf(0.0, float(event.get("starts_in", 0.0)) - elapsed)
+		return event
+	var event: Dictionary = DistrictEventRules.snapshot(_solo_elapsed_seconds, state in ["playing", "paused"], district_event_config)
+	event["delivered"] = _solo_event_delivered
+	event["bonus_money"] = _solo_event_bonus_money
+	return event
+
+
+func _order_event_view() -> Dictionary:
+	if _lan_active():
+		var view: Dictionary = _network_order_event.duplicate(true)
+		if view.is_empty():
+			return {}
+		var elapsed: float = maxf(0.0, float(Time.get_ticks_msec() - _snapshot_time_msec) / 1000.0)
+		view["remaining"] = maxf(0.0, float(view.get("remaining", 0.0)) - elapsed)
+		if float(view["remaining"]) <= 0.0:
+			view["bonus_available"] = false
+			view["bonus_money"] = 0
+		return view
+	return DistrictEventRules.order_view(active_order, _solo_elapsed_seconds, state in ["playing", "paused"], district_event_config)
+
+
+func _advance_solo_event() -> void:
+	if _lan_active() or state != "playing":
+		return
+	var event: Dictionary = _district_event_view()
+	var transition: bool = str(event["phase"]) != _solo_event_phase or str(event["id"]) != _solo_event_id
+	_solo_event_phase = str(event["phase"])
+	_solo_event_id = str(event["id"])
+	var removed: bool = false
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]) and not DistrictEventRules.can_accept(orders[index], event):
+			orders.remove_at(index)
+			removed = true
+	if transition or removed:
+		_fill_orders()
+		if event["phase"] == "active":
+			hud.notify("Обеденный час! Кофейня → офисы делового центра: +%d%% к деньгам за доставку в следующие %d с." % [int(round((float(event["bonus_multiplier"]) - 1.0) * 100.0)), int(ceil(float(event["remaining"])))])
+
+
+func _fill_orders(first: bool = false) -> void:
 	if _lan_active():
 		return
-	var count: int = clampi(int(balance.get("available_orders", 6)), 1, 10)
-	while orders.size() < count:
-		var local_only: bool = CityOrderRules.local_order_count(orders, city_order_config) < int(city_order_config["minimum_local_orders"])
-		var order: Dictionary = _make_order(first and orders.is_empty(), local_only)
+	var event: Dictionary = _district_event_view()
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]) and not DistrictEventRules.can_accept(orders[index], event):
+			orders.remove_at(index)
+	var count: int = clampi(int(balance.get("available_orders", 6)), 1, 6)
+	var normal: Array[Dictionary] = DistrictEventRules.normal_orders(orders)
+	while normal.size() < count:
+		var local_only: bool = CityOrderRules.local_order_count(normal, city_order_config) < int(city_order_config["minimum_local_orders"])
+		var order: Dictionary = _make_order(first and normal.is_empty(), local_only)
 		if order.is_empty():
 			break
 		orders.append(order)
+		normal.append(order)
+	if event.get("phase", "") == "active":
+		var event_count: int = orders.size() - normal.size()
+		while event_count < int(district_event_config["available_orders"]):
+			var order: Dictionary = DistrictEventRules.make_order(next_order_id, city.pickup_points, city.delivery_points, balance, event, district_event_config, orders)
+			if order.is_empty():
+				break
+			next_order_id += 1
+			orders.append(order)
+			event_count += 1
+	for order: Dictionary in orders:
+		DistrictEventRules.publish_order_fields(order, _solo_elapsed_seconds, state == "playing", district_event_config)
 	hud.set_orders(orders)
+
 
 func _accept_order(order_id: int) -> void :
 	if state != "playing":
@@ -284,6 +371,11 @@ func _accept_order(order_id: int) -> void :
 	for i in range(orders.size()):
 		if int(orders[i]["id"]) != order_id:
 			continue
+		if not DistrictEventRules.can_accept(orders[i], _district_event_view()):
+			orders.remove_at(i)
+			hud.notify("Обеденный час завершен. Выберите другой заказ.")
+			_fill_orders()
+			return
 		if int(profile["level"]) < int(orders[i].get("required_level", 1)):
 			hud.notify("Этот тип заказа доступен с уровня %d." % int(orders[i]["required_level"]))
 			return
@@ -357,6 +449,13 @@ func _complete_delivery() -> void :
 		profile["express_deliveries"] = int(profile["express_deliveries"]) + 1
 	elif completed["type"] == "fragile":
 		money += FragileRules.quality_bonus(completed)
+	var event_bonus: int = DistrictEventRules.bonus_for_delivery(completed, money, _solo_elapsed_seconds, district_event_config)
+	money += event_bonus
+	if DistrictEventRules.is_event_order(completed):
+		_solo_event_delivered += 1
+		_solo_event_bonus_money += event_bonus
+		shift_stats["event_deliveries"] = int(shift_stats.get("event_deliveries", 0)) + 1
+		shift_stats["event_bonus_money"] = int(shift_stats.get("event_bonus_money", 0)) + event_bonus
 	var previous_level: int = int(profile["level"])
 	profile["money"] = int(profile["money"]) + money
 	profile["xp"] = int(profile["xp"]) + xp
@@ -375,7 +474,8 @@ func _complete_delivery() -> void :
 	_play_sound("delivery")
 	if int(profile["level"]) > previous_level:
 		_play_sound("level_up")
-	hud.notify("Доставка завершена! +%d ₽ · +%d XP%s" % [money, xp, 
+	var event_notice: String = " · Бонус обеденного часа +%d ₽" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
+	hud.notify("Доставка завершена! +%d ₽ · +%d XP%s%s" % [money, xp, event_notice,
 		" · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""])
 	if not saved:
 		hud.notify("Доставка засчитана, но файл прогресса не удалось записать.")
@@ -431,6 +531,7 @@ func _update_hud() -> void :
 	var pose: Dictionary = player.get_network_pose()
 	hud.update_hud({
 		"team": _network_team, "handoffs": handoffs,
+		"district_event": _district_event_view(), "order_event": _order_event_view(),
 		"handoff_candidates": _handoff_candidates(),
 		"navigation": route_data, "player_yaw": float(pose.get("yaw", 0.0)),
 		"money": int(profile["money"]), "xp": int(profile["xp"]), "level": int(profile["level"]), 
@@ -457,6 +558,9 @@ func _open_orders() -> void :
 	modal = "orders"
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
+	if not _lan_active():
+		for order: Dictionary in orders:
+			DistrictEventRules.publish_order_fields(order, _solo_elapsed_seconds, state == "playing", district_event_config)
 	hud.set_orders(orders)
 	hud.show_orders(true)
 
@@ -504,6 +608,10 @@ func _resume() -> void :
 func _end_shift() -> void :
 	_dismiss_settings()
 	state = "results"
+	_solo_event_phase = "ended"
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]):
+			orders.remove_at(index)
 	modal = ""
 	shift_stats["time_used"] = float(balance.get("shift_seconds", 900)) - shift_remaining
 	_record_best_shift()
@@ -514,7 +622,9 @@ func _end_shift() -> void :
 	city.clear_objective()
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
-	hud.show_results(shift_stats)
+	var results: Dictionary = shift_stats.duplicate(true)
+	results["district_event"] = _district_event_view()
+	hud.show_results(results)
 
 func _record_best_shift() -> void :
 	profile["best_shift"] = maxi(int(profile["best_shift"]), int(shift_stats.get("money", 0)))
@@ -1053,6 +1163,8 @@ func _on_lan_lobby(data: Dictionary) -> void :
 	orders.clear()
 	_network_team.clear()
 	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_clear_vehicles()
 	city.clear_objective()
 	player.set_carrying(false)
@@ -1078,6 +1190,8 @@ func _on_lan_started(data: Dictionary) -> void :
 	orders.clear()
 	_network_team.clear()
 	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_network_leaderboard.clear()
 	_reset_shift_stats()
 	_clear_vehicles()
@@ -1132,6 +1246,19 @@ func _publish_lan_pose(peer_id: int, pose: Dictionary) -> void :
 		lan_session.publish_pose(peer_id, pose)
 
 
+func _order_list_signature(values: Array) -> Array:
+	var signature: Array = []
+	for value: Variant in values:
+		if not value is Dictionary:
+			continue
+		var order: Dictionary = value.duplicate(true)
+		# Countdown changes must not replace focused/scrolling order cards every 500 ms.
+		for key: String in ["event_remaining", "event_bonus_money", "event_bonus_available"]:
+			order.erase(key)
+		signature.append(order)
+	return signature
+
+
 func _on_lan_state(data: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
 		return
@@ -1155,8 +1282,10 @@ func _on_lan_state(data: Dictionary) -> void :
 	shift_stats = data.get("shift_stats", {}).duplicate(true)
 	_network_team = data.get("team", {}).duplicate(true)
 	_network_handoffs = data.get("handoffs", {}).duplicate(true)
+	_network_district_event = data.get("district_event", {}).duplicate(true)
+	_network_order_event = data.get("order_event", {}).duplicate(true)
 	var received_orders: Array = data.get("orders", [])
-	var orders_changed: bool = orders != received_orders
+	var orders_changed: bool = _order_list_signature(orders) != _order_list_signature(received_orders)
 	orders.assign(received_orders)
 	active_order = data.get("active_order", {}).duplicate(true)
 	if had_snapshot:
@@ -1195,6 +1324,7 @@ func _on_lan_state(data: Dictionary) -> void :
 		var results: Dictionary = shift_stats.duplicate(true)
 		results["leaderboard"] = _network_leaderboard
 		results["team"] = _network_team.duplicate(true)
+		results["district_event"] = _network_district_event.duplicate(true)
 		hud.show_results(results)
 
 
@@ -1371,6 +1501,8 @@ func _return_to_main_menu() -> void :
 	orders.clear()
 	_network_team.clear()
 	_network_handoffs.clear()
+	_network_district_event.clear()
+	_network_order_event.clear()
 	_network_leaderboard.clear()
 	_clear_vehicles()
 	_clear_remote_players()

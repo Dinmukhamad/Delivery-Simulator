@@ -11,6 +11,7 @@ const FragileRules = preload("res://scripts/fragile_rules.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
 const CityLayout = preload("res://scripts/city_layout.gd")
 const CityOrderRules = preload("res://scripts/city_order_rules.gd")
+const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
 const AVAILABLE_ORDER_COUNT: = 6
 const EXPRESS_REQUIRED_LEVEL: = 3
 const MAX_PROFILE_VALUE: = 1000000000
@@ -37,6 +38,11 @@ var next_order_id: int = 1
 var _world: Node3D
 var _balance: Dictionary = {}
 var _city_order_config: Dictionary = {}
+var _district_event_config: Dictionary = {}
+var _district_event_phase: String = "ended"
+var _district_event_id: String = ""
+var _event_delivered: int = 0
+var _event_bonus_money: int = 0
 var _started_at_msec: int = 0
 var _deadline_msec: int = -1
 var _shift_seconds: float = -1.0
@@ -62,6 +68,11 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 	_world = world
 	_balance = balance.duplicate(true)
 	_city_order_config = CityOrderRules.load_config()
+	_district_event_config = DistrictEventRules.load_config()
+	_district_event_phase = "waiting"
+	_district_event_id = "lunch_rush:1"
+	_event_delivered = 0
+	_event_bonus_money = 0
 	_vehicle_definitions = VehicleCatalog.load_definitions()
 	_team_config = TeamShiftRules.load_config()
 	_team_enabled = TeamShiftRules.normalize_mode(config.get("shift_mode", "competitive")) == "team"
@@ -187,6 +198,7 @@ func stop_session() -> void :
 	if phase == "offline":
 		return
 	phase = "offline"
+	_district_event_phase = "ended"
 	_handoff_offers.clear()
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
@@ -208,6 +220,7 @@ func snapshot_for(peer_id: int) -> Dictionary:
 		active_order["remaining"] = _order_remaining(active_order, now)
 		active_order.erase("deadline_msec")
 		active_order.erase("last_impact_msec")
+		DistrictEventRules.publish_order_fields(active_order, _elapsed_seconds(now), phase == "playing", _district_event_config)
 	var shift_stats: Dictionary = record.get("shift_stats", _empty_shift_stats()).duplicate(true)
 	if phase == "playing" and bool(record.get("connected", false)):
 		shift_stats["time_used"] = _elapsed_seconds(now)
@@ -217,13 +230,16 @@ func snapshot_for(peer_id: int) -> Dictionary:
 		var visible: Dictionary = order.duplicate(true)
 		visible.erase("last_impact_msec")
 		visible["locked"] = level < _order_required_level(order)
+		DistrictEventRules.publish_order_fields(visible, _elapsed_seconds(now), phase == "playing", _district_event_config)
 		visible_orders.append(visible)
 	return {
 		"session_id": session_id, "revision": revision, "phase": phase, 
 		"remaining": _remaining_seconds(now), "orders": visible_orders, 
 		"active_order": active_order, "profile": profile, "shift_stats": shift_stats, 
 		"players": _public_players(), "vehicles": _public_vehicles(), "leaderboard": _leaderboard(),
-		"team": _team_snapshot(peer_id), "handoffs": _handoff_snapshot(peer_id, now)
+		"team": _team_snapshot(peer_id), "handoffs": _handoff_snapshot(peer_id, now),
+		"district_event": _district_event_snapshot(now),
+		"order_event": DistrictEventRules.order_view(active_order, _elapsed_seconds(now), phase == "playing", _district_event_config)
 	}
 
 
@@ -248,7 +264,8 @@ func _advance_clock(now: int) -> bool:
 	if _deadline_msec >= 0 and now >= _deadline_msec:
 		_finish_shift(now)
 		return true
-	var expired: bool = _cleanup_handoffs(now)
+	var expired: bool = _advance_district_event(now)
+	expired = _cleanup_handoffs(now) or expired
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
 		var active: Dictionary = record["active_order"]
@@ -273,6 +290,8 @@ func _finish_shift(now: int = -1) -> void :
 	if now < 0:
 		now = Time.get_ticks_msec()
 	phase = "results"
+	_district_event_phase = "ended"
+	_remove_stale_event_orders(_district_event_snapshot(now))
 	_handoff_offers.clear()
 	for peer_id: Variant in records:
 		var record: Dictionary = records[peer_id]
@@ -299,6 +318,11 @@ func _accept_order(peer_id: int, payload: Dictionary) -> void :
 		var order: Dictionary = orders[index]
 		if int(order["id"]) != requested_id:
 			continue
+		if not DistrictEventRules.can_accept(order, _district_event_snapshot(Time.get_ticks_msec())):
+			orders.remove_at(index)
+			_notice(peer_id, "Обеденный час завершен. Выберите другой заказ.")
+			_mark_changed()
+			return
 		var required_level: int = _order_required_level(order)
 		if int(record["profile"]["level"]) < required_level:
 			_notice(peer_id, "%s: требуется уровень %d." % [str(order.get("type_name", "Этот заказ")), required_level])
@@ -380,6 +404,13 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 		profile["express_deliveries"] = int(profile["express_deliveries"]) + 1
 	elif completed["type"] == "fragile":
 		money += FragileRules.quality_bonus(completed)
+	var event_bonus: int = DistrictEventRules.bonus_for_delivery(completed, money, _elapsed_seconds(now), _district_event_config)
+	money += event_bonus
+	if DistrictEventRules.is_event_order(completed):
+		_event_delivered += 1
+		_event_bonus_money += event_bonus
+		stats["event_deliveries"] = int(stats.get("event_deliveries", 0)) + 1
+		stats["event_bonus_money"] = int(stats.get("event_bonus_money", 0)) + event_bonus
 	profile["money"] = int(profile["money"]) + money
 	profile["xp"] = int(profile["xp"]) + xp
 	profile["total_deliveries"] = int(profile["total_deliveries"]) + 1
@@ -397,7 +428,8 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 			_team_completed = true
 		_award_team_bonuses()
 	var level_notice: String = " · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""
-	_notice(peer_id, "Доставка завершена! +%d ₽ · +%d XP%s" % [money, xp, level_notice])
+	var event_notice: String = " · Бонус обеденного часа +%d ₽" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
+	_notice(peer_id, "Доставка завершена! +%d ₽ · +%d XP%s%s" % [money, xp, event_notice, level_notice])
 
 
 func _abandon_order(peer_id: int) -> void :
@@ -1008,19 +1040,67 @@ func _finite_vector(value: Vector3) -> bool:
 	return is_finite(value.x) and is_finite(value.y) and is_finite(value.z)
 
 
-func _fill_orders(first: bool = false) -> void :
+func _district_event_snapshot(now: int = -1) -> Dictionary:
+	if now < 0:
+		now = Time.get_ticks_msec()
+	var event: Dictionary = DistrictEventRules.snapshot(_elapsed_seconds(now), phase == "playing", _district_event_config)
+	event["delivered"] = _event_delivered
+	event["bonus_money"] = _event_bonus_money
+	return event
+
+
+func _remove_stale_event_orders(event: Dictionary) -> bool:
+	var removed: bool = false
+	for index: int in range(orders.size() - 1, -1, -1):
+		if DistrictEventRules.is_event_order(orders[index]) and not DistrictEventRules.can_accept(orders[index], event):
+			orders.remove_at(index)
+			removed = true
+	return removed
+
+
+func _advance_district_event(now: int) -> bool:
+	var event: Dictionary = _district_event_snapshot(now)
+	var transition: bool = str(event["phase"]) != _district_event_phase or str(event["id"]) != _district_event_id
+	_district_event_phase = str(event["phase"])
+	_district_event_id = str(event["id"])
+	var changed_event: bool = _remove_stale_event_orders(event)
+	if transition:
+		_fill_orders(false, now)
+		if event["phase"] == "active":
+			for peer_id: Variant in records:
+				if bool(records[peer_id].get("connected", false)):
+					_notice(int(peer_id), "Обеденный час! Кофейня → офисы делового центра: +%d%% к деньгам за доставку в следующие %d с." % [int(round((float(event["bonus_multiplier"]) - 1.0) * 100.0)), int(ceil(float(event["remaining"])))])
+	return transition or changed_event
+
+
+func _fill_orders(first: bool = false, now: int = -1) -> void:
 	if not is_instance_valid(_world):
 		return
 	var pickup_value: Variant = _world.get("pickup_points")
 	var delivery_value: Variant = _world.get("delivery_points")
 	if not pickup_value is Array or not delivery_value is Array or pickup_value.is_empty() or delivery_value.is_empty():
 		return
-	while orders.size() < AVAILABLE_ORDER_COUNT:
-		var local_only: bool = CityOrderRules.local_order_count(orders, _city_order_config) < int(_city_order_config["minimum_local_orders"])
-		var order: Dictionary = _make_order(first and orders.is_empty(), local_only)
+	if now < 0:
+		now = Time.get_ticks_msec()
+	var event: Dictionary = _district_event_snapshot(now)
+	_remove_stale_event_orders(event)
+	var normal: Array[Dictionary] = DistrictEventRules.normal_orders(orders)
+	while normal.size() < AVAILABLE_ORDER_COUNT:
+		var local_only: bool = CityOrderRules.local_order_count(normal, _city_order_config) < int(_city_order_config["minimum_local_orders"])
+		var order: Dictionary = _make_order(first and normal.is_empty(), local_only)
 		if order.is_empty():
 			break
 		orders.append(order)
+		normal.append(order)
+	if event["phase"] == "active":
+		var event_count: int = orders.size() - normal.size()
+		while event_count < int(_district_event_config["available_orders"]):
+			var order: Dictionary = DistrictEventRules.make_order(next_order_id, pickup_value, delivery_value, _balance, event, _district_event_config, orders)
+			if order.is_empty():
+				break
+			next_order_id += 1
+			orders.append(order)
+			event_count += 1
 
 
 func _make_order(first: bool = false, local_only: bool = false) -> Dictionary:
@@ -1093,7 +1173,8 @@ func _leaderboard() -> Array[Dictionary]:
 		rows.append({
 			"id": int(peer_id), "name": record["name"], "money": int(stats["money"]), "xp": int(stats["xp"]), 
 			"deliveries": int(stats["deliveries"]), "best_delivery": int(stats["best_delivery"]), "connected": bool(record["connected"]),
-			"team_bonus_money": int(stats.get("team_bonus_money", 0)), "team_bonus_xp": int(stats.get("team_bonus_xp", 0))
+			"team_bonus_money": int(stats.get("team_bonus_money", 0)), "team_bonus_xp": int(stats.get("team_bonus_xp", 0)),
+			"event_deliveries": int(stats.get("event_deliveries", 0)), "event_bonus_money": int(stats.get("event_bonus_money", 0))
 		})
 	rows.sort_custom( func(a: Dictionary, b: Dictionary) -> bool:
 		if a["money"] != b["money"]:
@@ -1125,7 +1206,7 @@ func _order_remaining(order: Dictionary, now: int) -> float:
 
 
 func _empty_shift_stats() -> Dictionary:
-	return {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0, "team_bonus_money": 0, "team_bonus_xp": 0}
+	return {"deliveries": 0, "money": 0, "xp": 0, "best_delivery": 0, "time_used": 0.0, "team_bonus_money": 0, "team_bonus_xp": 0, "event_deliveries": 0, "event_bonus_money": 0}
 
 
 func _record_best_shift(record: Dictionary) -> void :

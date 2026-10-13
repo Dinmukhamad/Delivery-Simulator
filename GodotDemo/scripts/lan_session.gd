@@ -14,7 +14,7 @@ signal message_received(message: String)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
-const GAME_VERSION: String = "0.11.0"
+const GAME_VERSION: String = "0.12.0"
 const PORT: int = 7777
 const SERVER_ID: int = 1
 const CONNECT_TIMEOUT_MS: int = 8000
