@@ -1,19 +1,19 @@
 # Delivery Simulator
 
-Editable Godot demo **0.10.0**, restored from the verified 0.8.0 build. Open `GodotDemo/project.godot` with Godot 4.6.3.
+Editable Godot demo **0.11.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
 
-LAN now offers **Team Shift**: complete a shared goal of four deliveries per starting player and earn a one-time personal bonus of 500 Money and 100 XP after contributing a completed delivery. Use Tab to offer an already picked parcel to a nearby free teammate; they explicitly accept or decline. The Host validates every transfer and retains the parcel deadline and fragile quality. Competitive mode remains the default.
+The city is **516 × 516 metres**, three times wider and longer than the original map. It contains **104 buildings, 18 pickup points and 51 delivery addresses** across business, civic/retail, logistics, residential, park and old-town districts. The original starting block, garage and first delivery remain accessible.
 
-The city map now matches the actual streets and buildings. Mini-map and M-map show the same route, turn arrows, player heading, route distance and confirmed pickup/delivery goal. Routes avoid solid buildings; walking/bicycle use paths, motor transport follows roads with a dashed final walking approach.
+M opens the full city map with district names. The mini-map shows the nearby 128 metres; navigation follows actual streets and paths, avoids buildings and marks the final walking approach. Beginning couriers get short local work, while owned transport unlocks longer trips.
 
-[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11768749891) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38297836122/artifacts/11768744775)
+LAN supports **Team Shift**: a fixed shared delivery goal, one-time personal bonus of 500 Money and 100 XP for a completed delivery contribution, and parcel handoffs requiring explicit consent through Tab. Competitive mode is the default.
 
-Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
+[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38325332235/artifacts/11780622440) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38325332235/artifacts/11780537590)
 
-[Team Shift rules and setup](docs/TEAM_SHIFT.md) · [Build evidence and limits](docs/BUILD_REPORT.md) · [Full navigation source/setup](docs/NAVIGATION.md) · [Recovery history](RECOVERY.md)
+Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS. LAN: Host Game → choose mode; friends Join Game using the Host IPv4 address, then Ready → Start. Same version **0.11.0**, same local network, UDP port 7777. Career profiles remain local.
 
-LAN: Host Game on one computer; Join Game with the Host's IPv4 address on the other. Use the same game version and local network; UDP port 7777. Ready → Start Game. Coordinates and orders are confirmed by the Host. Profile progress remains local.
+[City source/setup](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence and screenshots](docs/BUILD_REPORT.md) · [Recovery history](RECOVERY.md)
 
-CI passed 498 checks across navigation/Solo, Team Shift source and both exact target packs, and two-process ENet sessions. Isolated profile saves and actual UI renders also passed. Native OS launch, physical mixed-platform/four-device LAN and FPS still require acceptance testing.
+CI passed **5358 checks** across source and both exact target packs, with three two-process ENet scenarios and actual UI/city renders. Native Windows/macOS launch, mixed-platform four-device LAN and FPS still require acceptance testing. This is the separately agreed Godot demo.
 
-This is the standalone Godot demo, separate from the Unity project in the original specification. The old recovery tag's automatically generated source ZIP contains its initial README; use the current source branches for the full editable project.
+![Business district — actual engine capture](docs/screenshots/city-business-1280.png)
