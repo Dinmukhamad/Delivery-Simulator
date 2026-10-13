@@ -2,6 +2,7 @@ extends SceneTree
 
 # Render actual production event orders and HUD in isolated test mode.
 # Only the visual clock and player location are advanced by the fixture.
+# Controls stay disabled while physics/SpringArm run to settle the real camera.
 # Reward authority, timing boundaries and LAN ownership have separate tests.
 func _initialize() -> void:
 	call_deferred("_run")
@@ -41,7 +42,6 @@ func _run() -> void:
 	app.set_process_input(false)
 	app.player.set_controls_enabled(false)
 	app.player.set_mouse_captured(false)
-	app.player.process_mode = Node.PROCESS_MODE_DISABLED
 	# This calls the same generation/update path as a Solo game, without
 	# fabricating event metadata or inserting a synthetic delivery.
 	app._solo_elapsed_seconds = 50.0
@@ -81,7 +81,6 @@ func _run() -> void:
 		app.player.set_view_direction(PI)
 		app.player.set_controls_enabled(false)
 		app.player.set_mouse_captured(false)
-		app.player.process_mode = Node.PROCESS_MODE_DISABLED
 		app._update_hud()
 	else:
 		app._update_hud()
@@ -94,6 +93,7 @@ func _run() -> void:
 		app._open_map()
 	for i: int in range(6):
 		await process_frame
+		app._update_hud()
 	var view: Rect2 = Rect2(Vector2.ZERO, app.hud._root.size)
 	if not app.hud._event_panel.is_visible_in_tree() or not _inside_visible_scroll(app.hud._event_panel, view):
 		_fail("The event banner is outside the visible game viewport.")
@@ -128,6 +128,16 @@ func _run() -> void:
 	var ready_at: int = Time.get_ticks_msec() + 600
 	while Time.get_ticks_msec() < ready_at:
 		await process_frame
+		app._update_hud()
+	if screen == "game":
+		var guidance: Dictionary = app.hud._last_data.get("navigation", {})
+		if str(guidance.get("status", "")) != "ok" or guidance.get("points", []).size() < 2:
+			_fail("The event game capture has no completed production street route.")
+			return
+		var camera_distance: float = app.player.camera.global_position.distance_to(app.player.global_position)
+		if not app.player.camera.is_current() or camera_distance < 2.0 or camera_distance > 7.0:
+			_fail("The production third-person camera did not settle outside the courier model.")
+			return
 	await RenderingServer.frame_post_draw
 	var rendered: Image = root.get_texture().get_image()
 	if rendered.is_empty() or rendered.get_width() != width or rendered.get_height() != width * 9 / 16:
