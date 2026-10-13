@@ -508,5 +508,9 @@ func run_client() -> void:
 
 func check_saved_profile(label: String) -> void:
 	var saved: Variant = JSON.parse_string(FileAccess.get_file_as_string(app.SAVE_PATH))
-	check(saved is Dictionary and saved == app.profile, label + " atomic JSON matches every confirmed profile field")
+	# JSON numbers and arrays have different Variant representation from the
+	# runtime's int and typed Array[String] values. Compare every serialized
+	# field in the same JSON representation, then separately reload production.
+	var expected: Variant = JSON.parse_string(JSON.stringify(app.profile))
+	check(saved is Dictionary and expected is Dictionary and saved == expected, label + " atomic JSON matches every confirmed profile field")
 	check(not FileAccess.file_exists(app.SAVE_PATH + ".tmp"), label + " leaves no unfinished atomic save")
