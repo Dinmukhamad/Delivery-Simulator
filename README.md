@@ -1,25 +1,28 @@
 # Delivery Simulator
 
-Editable Godot demo **0.13.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
+Editable Godot demo **0.14.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
 
-**Customization** is available from Profile and Garage: select courier outfits, backpack shapes and vehicle paint. Free styles work from the beginning; extra styles use earned Money. Purchases and equipped choices are saved in the local career profile and displayed to LAN friends. Cosmetic styles do not change movement, vehicle handling or parcel quality. Old 0.12.0 profiles retain their career progress.
+**Cheat codes** open with F2 (Fn+F2 on some Macs), or the menu/pause button. Enter a code and press Enter or Apply. Codes ignore letter case and can be repeated. They update the local career profile; LAN grants are calculated by the Host for the requesting player. Grants do not count towards shift earnings, delivery statistics, Team Shift goals or district events.
 
-The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51 delivery addresses** across six districts. M opens the full map, the mini-map shows nearby streets, and routes follow the real city geometry.
+| Code | Effect |
+|---|---|
+| MONEY10000 | +10,000 Money |
+| MONEY50000 | +50,000 Money |
+| XP1000 | +1,000 XP |
+| LEVELUP | Next career level, up to 10 |
+| DELIVERYMASTER | Level 10 |
+| ALLVEHICLES | Own bicycle, scooter and car; normal level requirements remain |
 
-**Lunch Rush** starts 45 seconds into a shift: for three minutes, up to three extra cafe-to-office orders appear in the business district alongside six normal offers. Timely delivery pays 50% extra Money; accepted parcels remain worth their base reward afterwards.
+**Customization** is available from Profile and Garage: courier outfits, backpack shapes and vehicle paint. Free styles work from the beginning; extra styles use Money. Purchases and equipped choices are saved locally and displayed to LAN friends.
 
-LAN supports **Team Shift** goals, one-time contribution bonuses and explicit parcel handoffs through Tab. The Host controls common orders, event times, rewards and in-session cosmetic purchases.
+The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51 delivery addresses** across six districts. M opens the full map; routes follow the actual city geometry.
 
-[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38351852584/artifacts/11791746672) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/38351852584/artifacts/11790374877)
+**Lunch Rush** starts 45 seconds into a shift: three minutes of extra cafe-to-office orders in the business district. Timely delivery pays 50% extra Money. LAN **Team Shift** adds shared goals, contribution bonuses and explicit parcel handoffs through Tab.
 
-Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
+Version 0.14.0 validation and downloads are being prepared by [GitHub Actions](https://github.com/Dinmukhamad/Delivery-Simulator/actions/workflows/build-demo.yml). The previous 0.13.0 evidence remains in the build report until the new run finishes.
 
-CI passed **9867 checks** across source and both exact target packs, with five two-process ENet scenarios and 20 actual UI/city renders.
+LAN: Host Game → friends Join Game using the Host IPv4 → Ready → Start. Matching versions, same local network, UDP port 7777. Career profiles remain local.
 
-LAN: select appearance in Profile before Host/Join, or visit Garage during the shift. Friends Join Game using the Host IPv4 address, then Ready → Start. Same version **0.13.0**, same local network, UDP port 7777. Career profiles remain local.
-
-[Customization: source, setup and testing](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
+[Cheat codes: source, setup and testing](docs/CHEAT_CODES.md) · [Customization](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
 
 Native Windows/macOS launch, mixed-platform four-device LAN and FPS still require acceptance testing. This is the separately agreed Godot demo.
-
-![Customization — actual 3D engine capture](docs/screenshots/cosmetic-customization-1280.png)

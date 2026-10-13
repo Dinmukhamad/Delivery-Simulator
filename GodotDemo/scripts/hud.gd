@@ -26,6 +26,9 @@ signal settings_apply_requested(values: Dictionary)
 signal settings_closed
 signal settings_confirm_requested
 signal settings_revert_requested
+signal cheats_requested
+signal cheat_code_requested(code: String)
+signal cheats_closed
 signal ui_click_requested
 signal handoff_offer_requested(target_id: int)
 signal handoff_accept_requested(sender_id: int, offer_id: int)
@@ -160,6 +163,13 @@ var _settings_defaults: Dictionary = {}
 var _settings_resolution_values: Array[Vector2i] = []
 var _menu_settings: Button
 var _pause_settings: Button
+var _cheats: Control
+var _cheat_input: LineEdit
+var _cheat_apply: Button
+var _cheat_close: Button
+var _cheat_profile: Label
+var _cheat_notice: Label
+var _cheat_help: Label
 var _team_panel: PanelContainer
 var _team_progress: Label
 var _team_status: Label
@@ -642,6 +652,7 @@ func _ready() -> void :
 	_build_garage()
 	_build_settings()
 	_build_customization()
+	_build_cheats()
 	_build_toast()
 	_resize_scroll_overlays()
 	_hide_layers()
@@ -860,7 +871,17 @@ func _build_menu() -> void :
 	var side: PanelContainer = _card(layout, PAPER)
 	side.custom_minimum_size.x = 340.0
 	var info: VBoxContainer = _vbox(side, 12)
-	info.add_child(_label("СМЕНА КУРЬЕРА", 12, MUTED))
+	var side_header: HBoxContainer = HBoxContainer.new()
+	side_header.add_theme_constant_override("separation", 10)
+	info.add_child(side_header)
+	var side_title: Label = _label("СМЕНА КУРЬЕРА", 12, MUTED)
+	side_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	side_header.add_child(side_title)
+	var cheats_button: Button = _compact_button("Чит-коды", func() -> void: cheats_requested.emit(), true)
+	cheats_button.name = "OpenCheatsMenu"
+	cheats_button.custom_minimum_size.y = 36.0
+	cheats_button.tooltip_text = "Чит-коды · F2 (на Mac — Fn + F2)"
+	side_header.add_child(cheats_button)
 	var map_preview: MapView = MapView.new()
 	map_preview.custom_minimum_size = Vector2(290, 180)
 	map_preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1496,8 +1517,17 @@ func _build_pause() -> void :
 	content.add_child(_pause_profile)
 	_spacer(content, 8.0)
 	content.add_child(_compact_button("Продолжить смену", func() -> void : resume_requested.emit()))
+	var profile_actions: HBoxContainer = HBoxContainer.new()
+	profile_actions.add_theme_constant_override("separation", 10)
+	content.add_child(profile_actions)
 	_pause_settings = _compact_button("Настройки", func() -> void : settings_requested.emit(), true)
-	content.add_child(_pause_settings)
+	_pause_settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	profile_actions.add_child(_pause_settings)
+	var cheats_button: Button = _compact_button("Чит-коды", func() -> void: cheats_requested.emit(), true)
+	cheats_button.name = "OpenCheatsPause"
+	cheats_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cheats_button.tooltip_text = "Чит-коды · F2 (на Mac — Fn + F2)"
+	profile_actions.add_child(cheats_button)
 	_pause_restart = _compact_button("Начать новую смену", func() -> void : restart_requested.emit(), true)
 	content.add_child(_pause_restart)
 	_pause_leave = _compact_button("Выйти из комнаты · главное меню", func() -> void : leave_requested.emit(), true)
@@ -2120,6 +2150,109 @@ func _set_cosmetic_preview_vehicle(vehicle_type: String) -> void:
 		_update_cosmetic_preview()
 
 
+func _build_cheats() -> void:
+	var items: Array[Control] = _scroll_overlay(Vector2(660.0, 492.0))
+	_cheats = items[0]
+	_cheats.name = "CheatsDialog"
+	items[1].name = "CheatConsole"
+	var content: VBoxContainer = _vbox(items[1], 6)
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 12)
+	content.add_child(header)
+	var title: Label = _label("Чит-коды", 28)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+	_cheat_close = _compact_button("Закрыть", _request_close_cheats, true)
+	_cheat_close.name = "CheatClose"
+	_cheat_close.custom_minimum_size.y = 36.0
+	header.add_child(_cheat_close)
+	_cheat_profile = _label("", 14, MUTED)
+	_cheat_profile.name = "CheatProfile"
+	_cheat_profile.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_cheat_profile)
+	var entry: VBoxContainer = _vbox(content, 6)
+	_cheat_input = _field(entry, "Введите код · Enter — применить", "Например: money10000")
+	_cheat_input.name = "CheatCodeInput"
+	_cheat_input.max_length = 64
+	_cheat_input.custom_minimum_size.y = 42.0
+	_cheat_input.text_submitted.connect(_request_cheat_code)
+	_cheat_apply = _compact_button("Применить", func() -> void: _request_cheat_code(_cheat_input.text))
+	_cheat_apply.name = "CheatApply"
+	content.add_child(_cheat_apply)
+	_cheat_notice = _label("", 13, TEAL)
+	_cheat_notice.name = "CheatNotice"
+	_cheat_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_cheat_notice.custom_minimum_size.y = 32.0
+	content.add_child(_cheat_notice)
+	_cheat_help = _label("MONEY10000 — +10 000 ₽ · MONEY50000 — +50 000 ₽\nXP1000 — +1 000 XP · LEVELUP — +1 уровень\nDELIVERYMASTER — уровень 10 · ALLVEHICLES — весь транспорт", 13, MUTED)
+	_cheat_help.name = "CheatHelp"
+	_cheat_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(_cheat_help)
+	var saved_hint: Label = _label("Начисления сохраняются в профиле. Коды не считаются доставками.\nТранспорт доступен с нужного уровня; код не сажает в него автоматически.", 12, MUTED)
+	saved_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(saved_hint)
+	var keys_hint: Label = _label("Регистр не важен · F2 / Esc — закрыть · на Mac может понадобиться Fn + F2", 12, MUTED)
+	keys_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(keys_hint)
+	# Limit keyboard focus to the dialog while it is open, including Tab cycling.
+	_cheat_input.focus_next = _cheat_input.get_path_to(_cheat_apply)
+	_cheat_input.focus_previous = _cheat_input.get_path_to(_cheat_close)
+	_cheat_apply.focus_next = _cheat_apply.get_path_to(_cheat_close)
+	_cheat_apply.focus_previous = _cheat_apply.get_path_to(_cheat_input)
+	_cheat_close.focus_next = _cheat_close.get_path_to(_cheat_input)
+	_cheat_close.focus_previous = _cheat_close.get_path_to(_cheat_apply)
+
+
+func show_cheats(profile: Dictionary) -> void:
+	var already_open: bool = _cheats.visible
+	for layer_control: Control in [_menu, _pause, _results, _orders, _map, _lan_menu, _lobby, _garage, _settings, _customization]:
+		layer_control.hide()
+	update_cheats_profile(profile)
+	_cheats.show()
+	_resize_scroll_overlays()
+	_hide_current_notice()
+	if not already_open:
+		_cheat_input.clear()
+		set_cheat_notice("Введите код и нажмите Enter или «Применить».")
+		call_deferred("_focus_cheat_input")
+
+
+func _focus_cheat_input() -> void:
+	if _cheats.visible:
+		_cheat_input.grab_focus()
+
+
+func update_cheats_profile(profile: Dictionary) -> void:
+	_profile = profile.duplicate(true)
+	_cheat_profile.text = "Баланс: %s ₽ · Уровень %d · %d XP\nЗвание: %s" % [_amount(int(profile.get("money", 0))), int(profile.get("level", 1)), int(profile.get("xp", 0)), String(profile.get("rank", "Rookie Courier"))]
+	_menu_profile.text = _profile_line(profile)
+	_pause_profile.text = _profile_line(profile)
+	# Host snapshots refresh labels only: keep the entry, selection, caret and focus.
+
+
+func set_cheat_notice(message: String, is_error: bool = false) -> void:
+	_cheat_notice.text = message
+	_cheat_notice.add_theme_color_override("font_color", Color("a64f35") if is_error else TEAL)
+
+
+func _request_cheat_code(code: String) -> void:
+	if not _cheats.visible:
+		return
+	# LineEdit owns Enter; no default-button shortcut can apply the same input twice.
+	get_viewport().set_input_as_handled()
+	cheat_code_requested.emit(code)
+
+
+func _request_close_cheats() -> void:
+	if _cheats.visible:
+		cheats_closed.emit()
+
+
+func hide_cheats() -> void:
+	_cheats.hide()
+	_flush_pending_notice()
+
+
 func _build_settings() -> void :
 	var items: Array[Control] = _scroll_overlay(Vector2(660, 610))
 	_settings = items[0]
@@ -2405,7 +2538,7 @@ func _build_toast() -> void :
 
 
 func _hide_layers() -> void :
-	for layer_control: Control in [_menu, _game, _pause, _results, _orders, _map, _lan_menu, _lobby, _garage, _settings, _customization]:
+	for layer_control: Control in [_menu, _game, _pause, _results, _orders, _map, _lan_menu, _lobby, _garage, _settings, _customization, _cheats]:
 		layer_control.hide()
 
 
@@ -2561,6 +2694,7 @@ func show_pause(profile: Dictionary) -> void :
 	_garage.hide()
 	_settings.hide()
 	_customization.hide()
+	_cheats.hide()
 	_pause_profile.text = _profile_line(profile)
 	_pause.show()
 	_hide_current_notice()
@@ -2772,7 +2906,7 @@ func _queue_notice(message: String) -> void :
 
 
 func _has_blocking_overlay() -> bool:
-	return _orders.visible or _map.visible or _pause.visible or _results.visible or _lan_menu.visible or _lobby.visible or _garage.visible or _settings.visible or _customization.visible
+	return _orders.visible or _map.visible or _pause.visible or _results.visible or _lan_menu.visible or _lobby.visible or _garage.visible or _settings.visible or _customization.visible or _cheats.visible
 
 
 func _hide_current_notice() -> void :

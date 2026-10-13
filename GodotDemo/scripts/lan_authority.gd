@@ -7,6 +7,7 @@ signal pose_ready(peer_id: int, pose: Dictionary)
 
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
+const CheatCodeRules = preload("res://scripts/cheat_code_rules.gd")
 const VehiclePlacement = preload("res://scripts/vehicle_placement.gd")
 const FragileRules = preload("res://scripts/fragile_rules.gd")
 const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
@@ -28,6 +29,8 @@ const GARAGE_DISTANCE: = 5.0
 const VEHICLE_ENTER_DISTANCE: = 2.8
 const VEHICLE_EXIT_SPEED: = 1.5
 const IMPACT_HISTORY_MSEC: = 250
+const CHEAT_REQUEST_BURST: float = 6.0
+const CHEAT_REQUESTS_PER_SECOND: float = 3.0
 
 var records: Dictionary = {}
 var phase: String = "offline"
@@ -57,6 +60,7 @@ var _team_completed: bool = false
 var _team_awarded: Dictionary = {}
 var _handoff_offers: Dictionary = {}
 var _next_offer_id: int = 1
+var _cheat_budgets: Dictionary = {}
 
 
 func _ready() -> void :
@@ -83,6 +87,7 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 	_team_awarded.clear()
 	_handoff_offers.clear()
 	_next_offer_id = 1
+	_cheat_budgets.clear()
 	session_id = new_session_id
 	phase = "playing"
 	records.clear()
@@ -155,6 +160,8 @@ func handle_request(peer_id: int, action: String, payload: Dictionary) -> void :
 			_abandon_order(peer_id)
 		"pose":
 			_accept_pose(peer_id, payload)
+		"cheat_code":
+			_cheat_request(peer_id, payload)
 		"cosmetic_buy":
 			_cosmetic_request(peer_id, payload, true)
 		"cosmetic_select":
@@ -182,6 +189,7 @@ func remove_player(peer_id: int) -> void :
 	if not bool(record.get("connected", false)):
 		return
 	_clear_handoffs_for(peer_id)
+	_cheat_budgets.erase(peer_id)
 	record["connected"] = false
 	record["active_order"] = {}
 	record["carrying"] = false
@@ -416,8 +424,8 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 		_event_bonus_money += event_bonus
 		stats["event_deliveries"] = int(stats.get("event_deliveries", 0)) + 1
 		stats["event_bonus_money"] = int(stats.get("event_bonus_money", 0)) + event_bonus
-	profile["money"] = int(profile["money"]) + money
-	profile["xp"] = int(profile["xp"]) + xp
+	profile["money"] = mini(MAX_PROFILE_VALUE, int(profile["money"]) + money)
+	profile["xp"] = mini(MAX_PROFILE_VALUE, int(profile["xp"]) + xp)
 	profile["total_deliveries"] = int(profile["total_deliveries"]) + 1
 	profile["total_money_earned"] = int(profile["total_money_earned"]) + money
 	profile["level"] = _level_for_xp(int(profile["xp"]))
@@ -649,9 +657,9 @@ func _award_team_bonuses() -> void:
 		var money: int = int(_team_config["bonus_money"])
 		var xp: int = int(_team_config["bonus_xp"])
 		var profile: Dictionary = record["profile"]
-		profile["money"] = int(profile["money"]) + money
+		profile["money"] = mini(MAX_PROFILE_VALUE, int(profile["money"]) + money)
 		profile["total_money_earned"] = int(profile["total_money_earned"]) + money
-		profile["xp"] = int(profile["xp"]) + xp
+		profile["xp"] = mini(MAX_PROFILE_VALUE, int(profile["xp"]) + xp)
 		profile["level"] = _level_for_xp(int(profile["xp"]))
 		profile["rank"] = _rank_for_level(int(profile["level"]))
 		stats["money"] = int(stats["money"]) + money
@@ -660,6 +668,46 @@ func _award_team_bonuses() -> void:
 		stats["team_bonus_xp"] = xp
 		_record_best_shift(record)
 		_notice(peer_id, "Командный план выполнен! Ваш бонус: +%d ₽ · +%d XP." % [money, xp])
+
+
+func _cheat_request(peer_id: int, payload: Dictionary) -> void:
+	var now: int = Time.get_ticks_msec()
+	if not _allow_cheat_request(peer_id, now):
+		return
+	var result: Dictionary
+	if payload.size() != 1 or not payload.has("code") or not payload["code"] is String:
+		result = {"ok": false, "changed": false, "message": "Запрос должен содержать только строку чит-кода.", "code": ""}
+	else:
+		var record: Dictionary = records[peer_id]
+		var step: int = maxi(1, int(_number(_balance.get("level_xp_step", 150), 150.0)))
+		result = CheatCodeRules.apply(record["profile"], payload["code"], step)
+		if bool(result.get("changed", false)):
+			# The requester is the sole target. Grants never count as deliveries,
+			# shift earnings, team progress or district-event rewards.
+			_mark_changed()
+	_send_cheat_result(peer_id, result)
+
+
+func _allow_cheat_request(peer_id: int, now: int) -> bool:
+	var budget: Dictionary = _cheat_budgets.get(peer_id, {"tokens": CHEAT_REQUEST_BURST, "updated_msec": now, "denied_msec": -1000})
+	var elapsed: float = maxf(0.0, float(now - int(budget["updated_msec"])) / 1000.0)
+	budget["tokens"] = minf(CHEAT_REQUEST_BURST, float(budget["tokens"]) + elapsed * CHEAT_REQUESTS_PER_SECOND)
+	budget["updated_msec"] = now
+	_cheat_budgets[peer_id] = budget
+	if float(budget["tokens"]) < 1.0:
+		# Bound denial replies as well as grants to avoid echoing a request flood.
+		if now - int(budget["denied_msec"]) >= 1000:
+			budget["denied_msec"] = now
+			_send_cheat_result(peer_id, {"ok": false, "changed": false, "message": "Слишком много чит-кодов. Подождите секунду и повторите.", "code": ""})
+		return false
+	budget["tokens"] = float(budget["tokens"]) - 1.0
+	return true
+
+
+func _send_cheat_result(peer_id: int, result: Dictionary) -> void:
+	event_ready.emit(peer_id, {"type": "cheat_result", "session_id": session_id,
+		"ok": bool(result.get("ok", false)), "changed": bool(result.get("changed", false)),
+		"message": str(result.get("message", "")), "code": str(result.get("code", ""))})
 
 
 func _cosmetic_request(peer_id: int, payload: Dictionary, purchasing: bool) -> void:

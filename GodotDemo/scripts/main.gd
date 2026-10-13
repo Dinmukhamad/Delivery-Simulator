@@ -15,8 +15,9 @@ const NavigationService = preload("res://scripts/navigation_service.gd")
 const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
 const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
+const CheatCodeRules = preload("res://scripts/cheat_code_rules.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.13.0"
+const DEMO_VERSION: = "0.14.0"
 
 var city
 var player
@@ -37,6 +38,8 @@ var active_order: Dictionary = {}
 var state: String = "menu"
 var modal: String = ""
 var _customization_return_modal: String = ""
+var _cheat_return_modal: String = ""
+var _cheat_return_customization_modal: String = ""
 var cosmetic_defs: Dictionary = {}
 var shift_remaining: float = 900.0
 var shift_stats: Dictionary = {}
@@ -109,6 +112,9 @@ func _ready() -> void :
 	hud.cosmetic_buy_requested.connect(_buy_cosmetic)
 	hud.cosmetic_select_requested.connect(_select_cosmetic)
 	hud.customization_closed.connect(_close_customization)
+	hud.cheats_requested.connect(_open_cheats)
+	hud.cheat_code_requested.connect(_submit_cheat_code)
+	hud.cheats_closed.connect(_close_cheats)
 	hud.settings_requested.connect(_open_settings)
 	hud.settings_apply_requested.connect(_apply_settings)
 	hud.settings_closed.connect(_close_settings)
@@ -198,7 +204,9 @@ func _input(event: InputEvent) -> void :
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 		if key == KEY_ESCAPE:
-			if modal == "customization":
+			if modal == "cheats":
+				_close_cheats()
+			elif modal == "customization":
 				_close_customization()
 			elif modal == "settings":
 				_close_settings()
@@ -212,13 +220,23 @@ func _input(event: InputEvent) -> void :
 				else:
 					_pause()
 			get_viewport().set_input_as_handled()
-		elif state == "playing" and modal != "customization" and key == KEY_TAB:
+		elif key == KEY_F2:
+			if modal == "cheats":
+				_close_cheats()
+			else:
+				_open_cheats()
+			get_viewport().set_input_as_handled()
+		elif modal in ["cheats", "customization", "settings"]:
+			# LineEdit retains text/Enter events; player and vehicle controls
+			# remain disabled until the dialog has closed.
+			return
+		elif state == "playing" and key == KEY_TAB:
 			if modal == "orders":
 				_close_modal()
 			else:
 				_open_orders()
 			get_viewport().set_input_as_handled()
-		elif state == "playing" and modal != "customization" and key == KEY_M:
+		elif state == "playing" and key == KEY_M:
 			if modal == "map":
 				_close_modal()
 			else:
@@ -237,13 +255,19 @@ func _input(event: InputEvent) -> void :
 func _notification(what: int) -> void :
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_quit_game()
-	elif what == NOTIFICATION_WM_WINDOW_FOCUS_OUT and state == "playing":
-		_pause()
+	elif what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		if state == "playing":
+			_pause()
+		elif modal == "cheats":
+			_close_cheats()
+		elif modal == "customization":
+			_close_customization()
 
 func _begin_shift() -> void :
 	if player == null:
 		return
 	_dismiss_settings()
+	_dismiss_cheats()
 	if _lan_active():
 		_restart_shift()
 		return
@@ -468,8 +492,8 @@ func _complete_delivery() -> void :
 		shift_stats["event_deliveries"] = int(shift_stats.get("event_deliveries", 0)) + 1
 		shift_stats["event_bonus_money"] = int(shift_stats.get("event_bonus_money", 0)) + event_bonus
 	var previous_level: int = int(profile["level"])
-	profile["money"] = int(profile["money"]) + money
-	profile["xp"] = int(profile["xp"]) + xp
+	profile["money"] = mini(CheatCodeRules.MAX_PROFILE_VALUE, int(profile["money"]) + money)
+	profile["xp"] = mini(CheatCodeRules.MAX_PROFILE_VALUE, int(profile["xp"]) + xp)
 	profile["total_deliveries"] = int(profile["total_deliveries"]) + 1
 	profile["total_money_earned"] = int(profile["total_money_earned"]) + money
 	profile["level"] = _level_for_xp(int(profile["xp"]))
@@ -562,7 +586,7 @@ func _update_hud() -> void :
 	})
 
 func _open_orders() -> void :
-	if state != "playing":
+	if state != "playing" or modal in ["cheats", "customization", "settings"]:
 		return
 	hud.show_map(false)
 	hud.hide_garage()
@@ -576,7 +600,7 @@ func _open_orders() -> void :
 	hud.show_orders(true)
 
 func _open_map() -> void :
-	if state != "playing":
+	if state != "playing" or modal in ["cheats", "customization", "settings"]:
 		return
 	hud.show_orders(false)
 	hud.hide_garage()
@@ -587,6 +611,7 @@ func _open_map() -> void :
 	hud.show_map(true, player.global_position, _target_position())
 
 func _close_modal() -> void :
+	_dismiss_cheats()
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
@@ -601,6 +626,7 @@ func _close_modal() -> void :
 func _pause() -> void :
 	if state != "playing":
 		return
+	_dismiss_cheats()
 	hud.show_orders(false)
 	hud.show_map(false)
 	hud.hide_garage()
@@ -613,7 +639,7 @@ func _pause() -> void :
 	hud.show_pause(profile)
 
 func _resume() -> void :
-	if state != "paused" or modal == "settings":
+	if state != "paused" or not modal.is_empty():
 		return
 	state = "playing"
 	hud.show_game()
@@ -622,6 +648,7 @@ func _resume() -> void :
 
 func _end_shift() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	state = "results"
 	_solo_event_phase = "ended"
 	for index: int in range(orders.size() - 1, -1, -1):
@@ -647,6 +674,7 @@ func _record_best_shift() -> void :
 
 func _quit_game() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	if not profile.is_empty():
 		_record_best_shift()
 	if _lan_active():
@@ -656,6 +684,8 @@ func _quit_game() -> void :
 
 
 func _open_settings() -> void :
+	if modal in ["cheats", "customization"]:
+		return
 	if state == "playing":
 		_pause()
 	if state not in ["menu", "paused"] or modal == "settings":
@@ -766,7 +796,7 @@ func _load_profile() -> Dictionary:
 		if not (value is int or value is float) or not is_finite(float(value)) or float(value) < 0.0:
 			load_notice = "Профиль содержит неверные данные. Загружены безопасные значения."
 			continue
-		result[key] = clampi(int(value), 0, 1000000000)
+		result[key] = int(minf(float(value), float(CheatCodeRules.MAX_PROFILE_VALUE)))
 	if parsed.get("player_name", "Courier") is String:
 		result["player_name"] = _clean_player_name(str(parsed.get("player_name", "Courier")))
 	result["level"] = _level_for_xp(int(result["xp"]))
@@ -879,6 +909,93 @@ func _nearest_vehicle_owner() -> int:
 	return nearest
 
 
+func _can_use_cheats() -> bool:
+	if not _lan_active():
+		return state in ["menu", "playing", "paused"]
+	return state in ["playing", "paused"] and lan_session.phase == "playing"
+
+
+func _open_cheats() -> void:
+	if modal == "cheats":
+		return
+	if not _can_use_cheats():
+		hud.notify("Чит-коды доступны в профиле перед подключением и во время активной смены.")
+		return
+	if modal == "settings" or (settings_service != null and settings_service.has_pending_preview()):
+		hud.notify("Сначала закройте настройки и подтвердите или отмените изменения экрана.")
+		return
+	_cheat_return_modal = modal
+	_cheat_return_customization_modal = _customization_return_modal
+	hud.show_orders(false)
+	hud.show_map(false)
+	hud.hide_garage()
+	hud.hide_customization()
+	modal = "cheats"
+	_set_gameplay_controls(false)
+	player.set_mouse_captured(false)
+	hud.show_cheats(profile)
+
+
+func _close_cheats() -> void:
+	if modal != "cheats":
+		return
+	var previous_modal: String = _cheat_return_modal
+	var previous_customization_modal: String = _cheat_return_customization_modal
+	_dismiss_cheats()
+	if previous_modal == "customization" and _can_edit_cosmetics():
+		modal = "customization"
+		_customization_return_modal = previous_customization_modal
+		hud.show_customization(profile, cosmetic_defs)
+	elif state == "menu":
+		hud.show_menu(profile)
+	elif state == "paused":
+		hud.show_pause(profile)
+	elif state == "playing":
+		if previous_modal == "garage" and not player.is_riding() and _near_garage():
+			_open_garage()
+		elif previous_modal == "orders":
+			_open_orders()
+		elif previous_modal == "map":
+			_open_map()
+		else:
+			_close_modal()
+
+
+func _dismiss_cheats() -> void:
+	if hud != null:
+		hud.hide_cheats()
+	if modal == "cheats":
+		modal = ""
+	_cheat_return_modal = ""
+	_cheat_return_customization_modal = ""
+
+
+func _submit_cheat_code(raw_code: String) -> void:
+	if modal != "cheats" or not _can_use_cheats():
+		return
+	if _lan_active():
+		if CheatCodeRules.normalize_code(raw_code).is_empty():
+			hud.set_cheat_notice("Введите код длиной от 1 до 64 символов без переносов строк.", true)
+			return
+		hud.set_cheat_notice("Код отправлен Host…")
+		# Clients submit only a bounded code; amounts and targets are never sent.
+		lan_session.request_action("cheat_code", {"code": raw_code})
+		return
+	var previous_level: int = int(profile.get("level", 1))
+	var step: int = maxi(1, int(balance.get("level_xp_step", 150)))
+	var result: Dictionary = CheatCodeRules.apply(profile, raw_code, step)
+	if bool(result.get("changed", false)):
+		var saved: bool = _save_profile()
+		hud.update_cheats_profile(profile)
+		if int(profile["level"]) > previous_level:
+			_play_sound("level_up")
+		if state in ["playing", "paused"]:
+			_update_hud()
+		if not saved:
+			result["message"] = str(result.get("message", "")) + " Профиль не удалось записать: проверьте папку сохранений."
+	hud.set_cheat_notice(str(result.get("message", "")), not bool(result.get("ok", false)))
+
+
 func _can_edit_cosmetics() -> bool:
 	if not _lan_active() and state == "menu":
 		return true
@@ -886,6 +1003,8 @@ func _can_edit_cosmetics() -> bool:
 
 
 func _open_customization() -> void:
+	if modal in ["cheats", "settings"]:
+		return
 	if not _can_edit_cosmetics():
 		hud.notify("Стиль доступен в профиле перед подключением или в гараже пешком.")
 		return
@@ -949,11 +1068,12 @@ func _apply_profile_appearance() -> void:
 
 
 func _open_garage() -> void :
-	if state != "playing" or player.is_riding() or not _near_garage():
+	if state != "playing" or modal in ["cheats", "customization", "settings"] or player.is_riding() or not _near_garage():
 		return
 	modal = "garage"
 	_set_gameplay_controls(false)
 	player.set_mouse_captured(false)
+	hud.show_game()
 	hud.show_garage(profile, vehicle_defs)
 
 
@@ -1195,6 +1315,7 @@ func _restart_shift() -> void :
 
 
 func _open_lan_menu() -> void :
+	_dismiss_cheats()
 	state = "network_menu"
 	modal = ""
 	player.set_controls_enabled(false)
@@ -1244,6 +1365,7 @@ func _on_lan_lobby(data: Dictionary) -> void :
 	if str(data.get("phase", "lobby")) != "lobby":
 		return
 	lan_authority.stop_session()
+	_dismiss_cheats()
 	state = "lobby"
 	modal = ""
 	active_order.clear()
@@ -1267,6 +1389,7 @@ func _on_lan_lobby(data: Dictionary) -> void :
 func _on_lan_started(data: Dictionary) -> void :
 	if _closing_lan or not _lan_active():
 		return
+	_dismiss_cheats()
 	_has_lan_started = true
 	_last_network_revision = -1
 	_last_pose_msec = Time.get_ticks_msec()
@@ -1399,6 +1522,8 @@ func _on_lan_state(data: Dictionary) -> void :
 		hud.update_garage(profile, vehicle_defs)
 	elif profile_changed and modal == "customization":
 		hud.update_customization(profile, cosmetic_defs)
+	elif profile_changed and modal == "cheats":
+		hud.update_cheats_profile(profile)
 	if prior_order.get("id", -1) != active_order.get("id", -1) or prior_order.get("state", "") != active_order.get("state", ""):
 		city.clear_objective()
 		if not active_order.is_empty():
@@ -1413,6 +1538,7 @@ func _on_lan_state(data: Dictionary) -> void :
 	_update_hud()
 	if str(data.get("phase", "playing")) == "results":
 		_dismiss_settings()
+		_dismiss_cheats()
 		lan_session.phase = "results"
 		state = "results"
 		modal = ""
@@ -1466,6 +1592,11 @@ func _on_lan_event(event: Dictionary) -> void :
 		var position_value: Variant = event.get("position")
 		if position_value is Vector3:
 			player.correct_network_position(position_value)
+	elif str(event.get("type", "")) == "cheat_result":
+		if modal == "cheats":
+			hud.set_cheat_notice(str(event.get("message", "")), not bool(event.get("ok", false)))
+		else:
+			hud.notify(str(event.get("message", "")))
 	elif str(event.get("type", "")) == "cosmetic_result":
 		if modal == "customization":
 			hud.set_customization_notice(str(event.get("message", "")), not bool(event.get("ok", false)))
@@ -1595,6 +1726,7 @@ func _on_lan_disconnected(reason: String) -> void :
 
 func _return_to_main_menu() -> void :
 	_dismiss_settings()
+	_dismiss_cheats()
 	state = "menu"
 	modal = ""
 	_has_lan_started = false
