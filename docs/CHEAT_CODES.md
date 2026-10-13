@@ -157,5 +157,6 @@ godot --path GodotDemo --rendering-method gl_compatibility --script tests/cheat_
 | [lan_authority.gd](../GodotDemo/scripts/lan_authority.gd) | Проверка фазы смены, применение к профилю отправителя, ответ и обычный подтверждённый снимок. |
 | [lan_session.gd](../GodotDemo/scripts/lan_session.gd) | Сетевой запрос чит-кода и версия совместимости 0.14.0. |
 | [project.godot](../GodotDemo/project.godot), [export_presets.cfg](../GodotDemo/export_presets.cfg) | Версия приложения и метаданные Windows/macOS. |
+| [lan_cosmetic_peer.gd](../GodotDemo/tests/lan_cosmetic_peer.gd) | Проверка совместимости версии по текущим ProjectSettings вместо фиксированного номера предыдущего релиза. |
 | [build-demo.yml](../.github/workflows/build-demo.yml) | Проверки правил, интерфейса, сохранения, LAN, точных пакетов и три новых рендера. |
 | [README.md](../README.md), [BUILD_REPORT.md](BUILD_REPORT.md) | Возможности новой версии и фактические результаты сборки. |
