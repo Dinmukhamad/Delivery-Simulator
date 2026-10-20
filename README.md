@@ -21,10 +21,16 @@ The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51
 
 **Lunch Rush** starts 45 seconds into a shift: three minutes of extra cafe-to-office orders in the business district. Timely delivery pays 50% extra Money. LAN **Team Shift** adds shared goals, contribution bonuses and explicit parcel handoffs through Tab.
 
-Build 0.15.0 is being validated by [GitHub Actions](https://github.com/Dinmukhamad/Delivery-Simulator/actions/workflows/build-demo.yml); updated downloads and evidence follow a successful run.
+[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/39424298323/artifacts/12265354300) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/39424298323/artifacts/12266066581)
+
+Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
+
+CI passed **11720 checks** across source and both exact target packs, seven actual two-process ENet scenarios, isolated career saves and **27 engine renders**.
 
 LAN: Host Game → friends Join Game using the Host IPv4 → Ready → Start. Same version **0.15.0**, same local network, UDP port 7777. Career profiles remain local.
 
 [Cheat codes: source, setup and testing](docs/CHEAT_CODES.md) · [Customization](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
 
 Native Windows/macOS launch, mixed-platform four-device LAN and FPS still require acceptance testing. This is the separately agreed Godot demo.
+
+![Air Courier — actual engine capture](docs/screenshots/aircraft-game-1280.png)
