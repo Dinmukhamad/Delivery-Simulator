@@ -567,7 +567,7 @@ jobs:
           python3 - <<'PY'
           import base64, os, pathlib, subprocess
           reports = pathlib.Path("build-reports")
-          for page, width in [("game", 1280), ("garage", 1280), ("garage", 960)]:
+          for page, width in [("game", 1280), ("game", 960), ("garage", 1280), ("garage", 960)]:
               name = "aircraft-" + page + "-" + str(width) + ".png"
               capture = str((reports / name).resolve())
               cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x720x24", os.environ["GODOT_BINARY"], "--path", "GodotDemo", "--rendering-method", "gl_compatibility", "--resolution", str(width) + "x" + str(width * 9 // 16), "--script", "tests/aircraft_visual.gd", "--", "--test-mode", "--width=" + str(width), "--screen=" + page, "--capture=" + capture]

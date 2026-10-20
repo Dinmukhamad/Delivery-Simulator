@@ -553,8 +553,8 @@ func _update_hud() -> void :
 		if _active_vehicle_name() == "car":
 			interaction += " · Space — ручной тормоз"
 		elif _active_vehicle_name() == "airplane":
-			interaction = "W/S — газ / тормоз · A/D — поворот · Space — взлёт · Ctrl — снижение"
-			interaction += " · F — выйти" if player.riding_vehicle.can_disembark() else " · Для выхода приземлитесь и остановитесь"
+			interaction = "WASD — полёт · Space ↑ · Ctrl ↓"
+			interaction += " · F — выйти" if player.riding_vehicle.can_disembark() and absf(float(player.riding_vehicle.speed)) <= 1.5 else " · F — после посадки"
 	elif _near_garage():
 		interaction = "E — открыть гараж"
 	elif _nearest_vehicle_owner() >= 0:

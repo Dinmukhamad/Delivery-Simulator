@@ -205,6 +205,11 @@ func _fly_and_check(app, aircraft, owner_id: int, view: Rect2) -> bool:
 		_fail("The production aircraft did not move in flight or incorrectly allows an airborne exit.")
 		return false
 	app._update_hud()
+	for index: int in range(4):
+		await process_frame
+	if not _inside_visible_scroll(app.hud._interaction_panel, view) or not _inside_visible_scroll(app.hud._interaction, view) or not _inside_visible_scroll(app.hud._keys, view):
+		_fail("The real flight prompt or key legend is clipped by the viewport.")
+		return false
 	var data: Dictionary = app.hud._last_data
 	if str(data.get("active_vehicle", "")) != AIRCRAFT_ID or float(data.get("vehicle_altitude", -1.0)) < 12.0 or bool(data.get("vehicle_grounded", true)):
 		_fail("The actual gameplay HUD did not receive airborne aircraft altitude/state.")
