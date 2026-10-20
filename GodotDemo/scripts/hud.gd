@@ -48,12 +48,13 @@ const TEAL: Color = Color("247b72")
 const GOLD: Color = Color("e8b653")
 const EVENT_ORANGE: Color = Color("ad571f")
 const EVENT_PAPER: Color = Color("fff0d9")
-const VEHICLE_TYPES: Array[String] = ["bicycle", "scooter", "car"]
-const VEHICLE_NAMES: Dictionary = {"walking": "Пешком", "bicycle": "Велосипед", "scooter": "Скутер", "car": "Автомобиль"}
+const VEHICLE_TYPES: Array[String] = ["bicycle", "scooter", "car", "airplane"]
+const VEHICLE_NAMES: Dictionary = {"walking": "Пешком", "bicycle": "Велосипед", "scooter": "Скутер", "car": "Автомобиль", "airplane": "Самолёт Air Courier"}
 const VEHICLE_DESCRIPTIONS: Dictionary = {
 	"bicycle": "Лёгкий и манёвренный. Для коротких маршрутов и парковых дорожек.", 
 	"scooter": "Быстро через весь район. Компактный транспорт для срочных заказов.", 
 	"car": "Больше скорости на городских дорогах. Space — ручной тормоз.", 
+	"airplane": "Полёт над городом до 60 м. Space — набор высоты, Ctrl — снижение. F — выход после посадки.",
 }
 
 var _root: Control
@@ -209,7 +210,7 @@ var _cosmetic_preview: SubViewportContainer
 var _cosmetic_preview_title: Label
 var _cosmetic_preview_hint: Label
 var _cosmetic_rotation: HBoxContainer
-var _cosmetic_vehicle_controls: HBoxContainer
+var _cosmetic_vehicle_controls: GridContainer
 var _cosmetic_vehicle_preview: VehicleIllustration
 var _cosmetic_preview_vehicle: String = "bicycle"
 var _customization_close: Button
@@ -240,6 +241,7 @@ class VehicleIllustration extends Control:
 		match vehicle_type:
 			"scooter": _draw_scooter()
 			"car": _draw_car()
+			"airplane": _draw_airplane()
 			_: _draw_bicycle()
 		draw_set_transform(Vector2.ZERO)
 
@@ -316,6 +318,21 @@ class VehicleIllustration extends Control:
 		_wheel(Vector2(56, 119), 18.0)
 		_wheel(Vector2(161, 119), 18.0)
 
+	func _draw_airplane() -> void:
+		var body: Color = _paint(Color("658ed1"))
+		var wings: PackedVector2Array = PackedVector2Array([Vector2(102, 60), Vector2(17, 91), Vector2(17, 106), Vector2(104, 86), Vector2(193, 106), Vector2(193, 91), Vector2(110, 60)])
+		draw_colored_polygon(wings, body)
+		draw_polyline(wings, body.darkened(0.2), 2.0, true)
+		var tail: PackedVector2Array = PackedVector2Array([Vector2(104, 108), Vector2(62, 128), Vector2(62, 137), Vector2(105, 128), Vector2(148, 137), Vector2(148, 128), Vector2(110, 108)])
+		draw_colored_polygon(tail, body)
+		_rounded_rect(Rect2(97, 26, 18, 104), body.lightened(0.15), 9)
+		_rounded_rect(Rect2(99, 49, 14, 26), Color("c6e1e0"), 5)
+		draw_line(Vector2(103, 52), Vector2(103, 69), Color("fffaf0"), 2.0, true)
+		draw_line(Vector2(87, 34), Vector2(125, 34), Color("243b3a"), 4.0, true)
+		draw_circle(Vector2(106, 34), 5.0, GOLD)
+		draw_line(Vector2(27, 94), Vector2(54, 84), Color("fffaf0"), 4.0, true)
+		draw_line(Vector2(157, 84), Vector2(183, 94), Color("fffaf0"), 4.0, true)
+
 	func draw_ellipse_shadow(center: Vector2) -> void :
 		var points: PackedVector2Array = PackedVector2Array()
 		for index: int in 24:
@@ -333,6 +350,7 @@ class MapView extends Control:
 	var layout: Dictionary = {}
 	var route_points: Array[Vector3] = []
 	var player_yaw: float = 0.0
+	var player_vehicle: String = "walking"
 	var walk_last: bool = false
 	var target_picked: bool = false
 	var district_event: Dictionary = {}
@@ -352,11 +370,12 @@ class MapView extends Control:
 		has_target = target_visible
 		queue_redraw()
 
-	func update_navigation(value: Dictionary, yaw: float, picked: bool) -> void:
+	func update_navigation(value: Dictionary, yaw: float, picked: bool, vehicle_type: String = "walking") -> void:
 		route_points.clear()
 		if has_target:
 			route_points.assign(value.get("points", []))
 		player_yaw = yaw
+		player_vehicle = vehicle_type
 		walk_last = bool(value.get("walk_last", false))
 		target_picked = picked
 		queue_redraw()
@@ -435,6 +454,14 @@ class MapView extends Control:
 		var length: float = 6.0 if large else 4.0
 		draw_line(tip, tip - direction.rotated(0.55) * length, color, 2.0, true)
 		draw_line(tip, tip - direction.rotated(-0.55) * length, color, 2.0, true)
+
+	func _draw_airplane_marker(center: Vector2, yaw: float, radius: float, color: Color) -> void:
+		var forward: Vector2 = Vector2(-sin(yaw), -cos(yaw))
+		var right: Vector2 = forward.rotated(PI * 0.5)
+		var shape: PackedVector2Array = PackedVector2Array()
+		for point: Vector2 in [Vector2(0, 1.3), Vector2(0.2, 0.3), Vector2(1.2, -0.15), Vector2(1.2, -0.45), Vector2(0.18, -0.15), Vector2(0.15, -0.85), Vector2(0.55, -1.0), Vector2(0.55, -1.2), Vector2(0, -1.05), Vector2(-0.55, -1.2), Vector2(-0.55, -1.0), Vector2(-0.15, -0.85), Vector2(-0.18, -0.15), Vector2(-1.2, -0.45), Vector2(-1.2, -0.15), Vector2(-0.2, 0.3)]:
+			shape.append(center + (right * point.x + forward * point.y) * radius)
+		draw_colored_polygon(shape, color)
 
 	func _clip_segment(a: Vector2, b: Vector2) -> PackedVector2Array:
 		# Liang-Barsky clipping preserves the actual road segment at the local map boundary.
@@ -595,16 +622,24 @@ class MapView extends Control:
 				continue
 			var peer: Vector2 = _point(entry["position"])
 			var color_index: int = posmod(int(entry.get("id", 0)), PLAYER_COLORS.size())
-			draw_circle(peer, 7.0 if large else 4.5, Color("fffaf0"))
-			draw_circle(peer, 5.0 if large else 3.0, PLAYER_COLORS[color_index])
+			if String(entry.get("active_vehicle", "walking")) == "airplane":
+				_draw_airplane_marker(peer, float(entry.get("yaw", 0.0)), 7.0 if large else 4.5, Color("fffaf0"))
+				_draw_airplane_marker(peer, float(entry.get("yaw", 0.0)), 5.0 if large else 3.0, PLAYER_COLORS[color_index])
+			else:
+				draw_circle(peer, 7.0 if large else 4.5, Color("fffaf0"))
+				draw_circle(peer, 5.0 if large else 3.0, PLAYER_COLORS[color_index])
 			if large:
 				_caption(peer, String(entry.get("name", "Курьер")).substr(0, 16), Color("243b3a"))
 		var player: Vector2 = _point(player_position)
-		draw_circle(player, 9.0 if large else 6.0, Color("fffaf0"))
-		var forward: Vector2 = Vector2(-sin(player_yaw), -cos(player_yaw))
-		var radius: float = 8.0 if large else 5.0
-		var triangle: PackedVector2Array = PackedVector2Array([player + forward * radius, player + forward.rotated(2.45) * radius, player + forward.rotated(-2.45) * radius])
-		draw_colored_polygon(triangle, Color("195b57"))
+		if player_vehicle == "airplane":
+			_draw_airplane_marker(player, player_yaw, 10.0 if large else 7.0, Color("fffaf0"))
+			_draw_airplane_marker(player, player_yaw, 8.0 if large else 5.0, Color("195b57"))
+		else:
+			draw_circle(player, 9.0 if large else 6.0, Color("fffaf0"))
+			var forward: Vector2 = Vector2(-sin(player_yaw), -cos(player_yaw))
+			var radius: float = 8.0 if large else 5.0
+			var triangle: PackedVector2Array = PackedVector2Array([player + forward * radius, player + forward.rotated(2.45) * radius, player + forward.rotated(-2.45) * radius])
+			draw_colored_polygon(triangle, Color("195b57"))
 		var area: Rect2 = _map_rect()
 		if not large:
 			draw_rect(Rect2(area.position, Vector2(area.size.x, 18.0)), Color(1.0, 0.98, 0.94, 0.86))
@@ -784,7 +819,7 @@ func _resize_scroll_overlays() -> void :
 		scroll.custom_minimum_size = Vector2(minf(desired.x, maxf(320.0, available.x)), minf(desired.y, maxf(240.0, available.y)))
 		panel.custom_minimum_size.x = scroll.custom_minimum_size.x - 14.0
 	if is_instance_valid(_garage_grid):
-		_garage_grid.columns = 3 if available.x >= 800.0 else (2 if available.x >= 570.0 else 1)
+		_garage_grid.columns = 2 if available.x >= 570.0 else 1
 	if is_instance_valid(_customization_panel):
 		_customization_panel.custom_minimum_size = Vector2(minf(940.0, maxf(320.0, available.x)), minf(600.0, maxf(320.0, available.y)))
 		if is_instance_valid(_cosmetic_items):
@@ -1118,7 +1153,7 @@ func _build_game() -> void :
 	finances.offset_top = 24.0
 	finances.offset_bottom = 156.0
 	var stats: VBoxContainer = _vbox(finances, 5)
-	_money = _label("0 ₽", 27)
+	_money = _label("0 ₸", 27)
 	stats.add_child(_money)
 	_xp_level = _label("Уровень 1 · 0 XP", 14, TEAL)
 	stats.add_child(_xp_level)
@@ -1254,7 +1289,7 @@ func _update_district_event(data: Dictionary) -> void:
 		var bonus_available: bool = bool(order_event.get("bonus_available", false))
 		var order_name: String = String(order_event.get("name", name_value))
 		var bonus: int = maxi(0, int(order_event.get("bonus_money", 0)))
-		_order_event_hint.text = "%s · %s · +%s ₽ вовремя" % [order_name, _time(float(order_event.get("remaining", 0.0))), _amount(bonus)] if bonus_available else "%s завершён · обычная награда" % order_name
+		_order_event_hint.text = "%s · %s · +%s ₸ вовремя" % [order_name, _time(float(order_event.get("remaining", 0.0))), _amount(bonus)] if bonus_available else "%s завершён · обычная награда" % order_name
 	else:
 		_order_event_hint.text = ""
 	if was_visible != _order_event_hint.visible:
@@ -1272,7 +1307,7 @@ func _update_event_order_badges(event: Dictionary) -> void:
 		var remaining: float = maxf(0.0, float(event.get("remaining", 0.0))) if current else maxf(0.0, float(entry.get("remaining", 0.0)))
 		# Snapshot phase closes the current cycle. Never guess the deadline from a client wall clock.
 		var available: bool = current and remaining > 0.0 and bool(entry.get("available", false))
-		label.text = "%s · %s · +%s ₽ вовремя" % [String(entry.get("name", "Обеденный час")), _time(remaining), _amount(int(entry.get("bonus", 0)))] if available else "%s · обычная награда после события" % String(entry.get("name", "Обеденный час"))
+		label.text = "%s · %s · +%s ₸ вовремя" % [String(entry.get("name", "Обеденный час")), _time(remaining), _amount(int(entry.get("bonus", 0)))] if available else "%s · обычная награда после события" % String(entry.get("name", "Обеденный час"))
 		label.set_meta("event_bonus_available", available)
 		label.set_meta("event_remaining", remaining if available else 0.0)
 
@@ -1311,7 +1346,7 @@ func _team_goal_text(team: Dictionary) -> String:
 
 func _team_personal_text(team: Dictionary) -> String:
 	var contribution: int = int(team.get("contributions", 0))
-	var reward: String = "+%s ₽ · +%d XP" % [_amount(int(team.get("bonus_money", 0))), int(team.get("bonus_xp", 0))]
+	var reward: String = "+%s ₸ · +%d XP" % [_amount(int(team.get("bonus_money", 0))), int(team.get("bonus_xp", 0))]
 	if bool(team.get("bonus_awarded", false)):
 		return "Ваш вклад: %d доставок. Командный бонус получен: %s." % [contribution, reward]
 	if contribution < 1:
@@ -1452,7 +1487,7 @@ func _update_team_results(stats: Dictionary) -> void:
 		return
 	var money: int = int(stats.get("team_bonus_money", 0))
 	var xp: int = int(stats.get("team_bonus_xp", 0))
-	var outcome: String = "Ваш командный бонус: +%s ₽ · +%d XP (уже включён в итоги)." % [_amount(money), xp]
+	var outcome: String = "Ваш командный бонус: +%s ₸ · +%d XP (уже включён в итоги)." % [_amount(money), xp]
 	if money <= 0 and xp <= 0:
 		outcome = "Командный бонус не получен: вы не завершили личную доставку." if int(team.get("contributions", 0)) < 1 else "Командный бонус не получен: общий план не выполнен."
 	_results_team_text.text = "%s\nДоставлено вами: %d. %s" % [_team_goal_text(team), int(team.get("contributions", 0)), outcome]
@@ -1496,7 +1531,7 @@ func _update_order_quality(data: Dictionary) -> void :
 	_quality_fill.bg_color = color
 	var maximum: int = maxi(0, int(data.get("quality_bonus_max", 0)))
 	var bonus: int = clampi(int(data.get("quality_bonus", maximum)), 0, maximum)
-	_quality_bonus.text = "За качество: +%s ₽ из +%s ₽" % [_amount(bonus), _amount(maximum)] if picked_up else "За качество: до +%s ₽" % _amount(maximum)
+	_quality_bonus.text = "За качество: +%s ₸ из +%s ₸" % [_amount(bonus), _amount(maximum)] if picked_up else "За качество: до +%s ₸" % _amount(maximum)
 
 
 func _ignore_mouse(control: Control) -> void :
@@ -1594,7 +1629,7 @@ func _add_leaderboard_row(parent: Node, entry: Dictionary, heading: bool = false
 	var player_name: String = String(entry.get("name", "Курьер"))
 	if not heading and not bool(entry.get("connected", true)):
 		player_name = "Вышел · " + player_name
-	var values: Array = ["Игрок", "Дост.", "₽", "XP", "Лучшая"] if heading else [player_name, str(int(entry.get("deliveries", 0))), _amount(int(entry.get("money", 0))), str(int(entry.get("xp", 0))), _amount(int(entry.get("best_delivery", 0)))]
+	var values: Array = ["Игрок", "Дост.", "₸", "XP", "Лучшая"] if heading else [player_name, str(int(entry.get("deliveries", 0))), _amount(int(entry.get("money", 0))), str(int(entry.get("xp", 0))), _amount(int(entry.get("best_delivery", 0)))]
 	var widths: Array[float] = [132.0, 34.0, 63.0, 46.0, 66.0]
 	for index: int in values.size():
 		var cell: Label = _label(values[index], 11 if heading else 13, MUTED if heading or not bool(entry.get("connected", true)) else INK)
@@ -1695,8 +1730,11 @@ func _build_garage() -> void :
 	_garage_profile.add_theme_constant_override("line_spacing", 3)
 	_garage_profile.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_garage_profile)
+	var fleet_hint: Label = _label("Четыре вида транспорта · самолёт открывается на уровне 8. Прокрутите список, чтобы увидеть все варианты.", 13, TEAL)
+	fleet_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	content.add_child(fleet_hint)
 	_garage_grid = GridContainer.new()
-	_garage_grid.columns = 3
+	_garage_grid.columns = 2
 	_garage_grid.add_theme_constant_override("h_separation", 12)
 	_garage_grid.add_theme_constant_override("v_separation", 12)
 	_garage_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1718,7 +1756,7 @@ func _build_garage() -> void :
 	walking.add_theme_constant_override("separation", 10)
 	content.add_child(walking)
 	walking.add_child(_label("Пешком", 14, TEAL))
-	var walking_note: Label = _label("Бесплатно · доступно всегда · F — выйти из транспорта", 13, MUTED)
+	var walking_note: Label = _label("Бесплатно · доступно всегда · F — выйти из транспорта; из самолёта — после посадки", 13, MUTED)
 	walking_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	walking_note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	walking.add_child(walking_note)
@@ -1731,6 +1769,7 @@ func _build_vehicle_card(vehicle_type: String) -> void :
 	var category: Label = _label("", 11, TEAL)
 	content.add_child(category)
 	var name_label: Label = _label(_vehicle_name(vehicle_type), 23)
+	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(name_label)
 	var illustration: VehicleIllustration = VehicleIllustration.new()
 	illustration.vehicle_type = vehicle_type
@@ -1812,12 +1851,14 @@ func update_garage(profile: Dictionary, definitions: Dictionary) -> void :
 		var name_label: Label = card["name"]
 		name_label.text = _vehicle_name(vehicle_type, definition)
 		var specs: Label = card["specs"]
-		specs.text = "До %d км/ч\nСтоимость: %s ₽" % [roundi(speed * 3.6), _amount(price)]
+		specs.text = "До %d км/ч\nСтоимость: %s ₸" % [roundi(speed * 3.6), _amount(price)]
+		if vehicle_type == "airplane":
+			specs.text += "\nВысота: до %d м" % roundi(float(definition.get("max_altitude", 60.0)))
 		var buy: Button = card["buy"]
 		var spawn: Button = card["spawn"]
 		buy.visible = not owned
 		buy.disabled = owned or level < required_level or money < price
-		buy.text = "Нужен уровень %d" % required_level if level < required_level else "Купить · %s ₽" % _amount(price)
+		buy.text = "Нужен уровень %d" % required_level if level < required_level else "Купить · %s ₸" % _amount(price)
 		spawn.visible = owned
 		spawn.disabled = not owned or level < required_level
 		spawn.text = "Поставить транспорт" if selected else "Поставить / выбрать"
@@ -1826,9 +1867,9 @@ func update_garage(profile: Dictionary, definitions: Dictionary) -> void :
 		if level < required_level:
 			status.text = "Откроется на уровне %d" % required_level
 		elif owned:
-			status.text = "Куплен · выбран" if selected else "Куплен · готов к поездке"
+			status.text = "Куплен · выбран" if selected else ("Куплен · готов к полёту" if vehicle_type == "airplane" else "Куплен · готов к поездке")
 		elif money < price:
-			status.text = "Не хватает %s ₽" % _amount(price - money)
+			status.text = "Не хватает %s ₸" % _amount(price - money)
 		else:
 			status.text = "Можно купить"
 		var card_style: StyleBoxFlat = _style(Color("e0ece0") if selected else PAPER)
@@ -1836,9 +1877,9 @@ func update_garage(profile: Dictionary, definitions: Dictionary) -> void :
 			card_style.border_color = TEAL
 			card_style.set_border_width_all(2)
 		card_panel.add_theme_stylebox_override("panel", card_style)
-	_garage_hint.text = "Покупки сохраняются в профиле. Поставьте выбранный транспорт у гаража и нажмите F рядом с ним. Перед передачей посылки остановитесь и выйдите."
+	_garage_hint.text = "Покупки сохраняются в профиле. Поставьте транспорт у гаража и нажмите F рядом с ним. Самолёт: Space — вверх, Ctrl — вниз, F — выход после посадки. Перед передачей посылки остановитесь и выйдите."
 	if level == 1:
-		_garage_hint.text = "Начните с пеших доставок. Первый велосипед откроется на уровне 2. Скутер — на уровне 4, автомобиль — на уровне 6."
+		_garage_hint.text = "Начните с пеших доставок. Первый велосипед откроется на уровне 2. Скутер — на уровне 4, автомобиль — на уровне 6, самолёт — на уровне 8."
 
 
 func _owns_bicycle(profile: Dictionary) -> bool:
@@ -1929,11 +1970,13 @@ func _build_customization() -> void:
 	rotate_right.tooltip_text = "Повернуть курьера вправо"
 	rotate_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_cosmetic_rotation.add_child(rotate_right)
-	_cosmetic_vehicle_controls = HBoxContainer.new()
-	_cosmetic_vehicle_controls.add_theme_constant_override("separation", 4)
+	_cosmetic_vehicle_controls = GridContainer.new()
+	_cosmetic_vehicle_controls.columns = 2
+	_cosmetic_vehicle_controls.add_theme_constant_override("h_separation", 4)
+	_cosmetic_vehicle_controls.add_theme_constant_override("v_separation", 4)
 	preview_column.add_child(_cosmetic_vehicle_controls)
 	for vehicle_type: String in VEHICLE_TYPES:
-		var short_name: String = {"bicycle": "Вело", "scooter": "Скутер", "car": "Авто"}[vehicle_type]
+		var short_name: String = {"bicycle": "Вело", "scooter": "Скутер", "car": "Авто", "airplane": "Самолёт"}[vehicle_type]
 		var button: Button = _compact_button(short_name, func() -> void: _set_cosmetic_preview_vehicle(vehicle_type), true)
 		button.custom_minimum_size.y = 32.0
 		button.add_theme_font_size_override("font_size", 12)
@@ -1998,7 +2041,7 @@ func update_customization(profile: Dictionary, definitions: Dictionary) -> void:
 	_profile = profile.duplicate(true)
 	var rebuild: bool = _customization_definitions != definitions or _cosmetic_cards.is_empty()
 	_customization_definitions = definitions.duplicate(true)
-	_customization_summary.text = "%s · уровень %d · %s ₽" % [String(profile.get("player_name", "Курьер")), int(profile.get("level", 1)), _amount(int(profile.get("money", 0)))]
+	_customization_summary.text = "%s · уровень %d · %s ₸" % [String(profile.get("player_name", "Курьер")), int(profile.get("level", 1)), _amount(int(profile.get("money", 0)))]
 	_menu_profile.text = _profile_line(profile)
 	if rebuild:
 		_rebuild_cosmetic_items()
@@ -2086,12 +2129,12 @@ func _update_cosmetic_cards() -> void:
 		var selected: bool = String(appearance.get(_customization_category, "")) == id
 		var candidate: bool = String(_customization_candidate.get(_customization_category, "")) == id
 		var status: Label = card["status"]
-		status.text = "Выбрано · бесплатно" if selected and price == 0 else ("Выбрано · куплено" if selected else ("Бесплатно · доступно" if price == 0 else ("Куплено · доступно" if owned else "Стоимость: %s ₽" % _amount(price))))
+		status.text = "Выбрано · бесплатно" if selected and price == 0 else ("Выбрано · куплено" if selected else ("Бесплатно · доступно" if price == 0 else ("Куплено · доступно" if owned else "Стоимость: %s ₸" % _amount(price))))
 		status.add_theme_color_override("font_color", TEAL if selected else MUTED)
 		var action: Button = card["action"]
-		action.text = "Выбрано" if selected else ("Выбрать" if owned else "Купить · %s ₽" % _amount(price))
+		action.text = "Выбрано" if selected else ("Выбрать" if owned else "Купить · %s ₸" % _amount(price))
 		action.disabled = selected or (not owned and money < price)
-		action.tooltip_text = "Не хватает %s ₽" % _amount(price - money) if not owned and money < price else ""
+		action.tooltip_text = "Не хватает %s ₸" % _amount(price - money) if not owned and money < price else ""
 		var panel: PanelContainer = card["panel"]
 		panel.set_meta("selected", selected)
 		panel.set_meta("owned", owned)
@@ -2184,7 +2227,7 @@ func _build_cheats() -> void:
 	_cheat_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_cheat_notice.custom_minimum_size.y = 32.0
 	content.add_child(_cheat_notice)
-	_cheat_help = _label("MONEY10000 — +10 000 ₽ · MONEY50000 — +50 000 ₽\nXP1000 — +1 000 XP · LEVELUP — +1 уровень\nDELIVERYMASTER — уровень 10 · ALLVEHICLES — весь транспорт", 13, MUTED)
+	_cheat_help = _label("MONEY10000 — +10 000 ₸ · MONEY50000 — +50 000 ₸\nXP1000 — +1 000 XP · LEVELUP — +1 уровень\nDELIVERYMASTER — уровень 10 · ALLVEHICLES — весь транспорт", 13, MUTED)
 	_cheat_help.name = "CheatHelp"
 	_cheat_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_cheat_help)
@@ -2224,7 +2267,7 @@ func _focus_cheat_input() -> void:
 
 func update_cheats_profile(profile: Dictionary) -> void:
 	_profile = profile.duplicate(true)
-	_cheat_profile.text = "Баланс: %s ₽ · Уровень %d · %d XP\nЗвание: %s" % [_amount(int(profile.get("money", 0))), int(profile.get("level", 1)), int(profile.get("xp", 0)), String(profile.get("rank", "Rookie Courier"))]
+	_cheat_profile.text = "Баланс: %s ₸ · Уровень %d · %d XP\nЗвание: %s" % [_amount(int(profile.get("money", 0))), int(profile.get("level", 1)), int(profile.get("xp", 0)), String(profile.get("rank", "Rookie Courier"))]
 	_menu_profile.text = _profile_line(profile)
 	_pause_profile.text = _profile_line(profile)
 	# Host snapshots refresh labels only: keep the entry, selection, caret and focus.
@@ -2317,7 +2360,7 @@ func _build_settings() -> void :
 	var controls: VBoxContainer = _vbox(_card(content, PAPER), 12)
 	_settings_pages.append(controls.get_parent())
 	_settings_slider(controls, "Чувствительность мыши", "mouse_sensitivity", 0.2, 3.0, 0.05)
-	var control_hint: Label = _label("WASD — движение · Shift — бег · Space — прыжок\nМышь — камера · E — взаимодействие · F — транспорт\nM — карта · Tab — заказы · Esc — пауза", 14, MUTED)
+	var control_hint: Label = _label("WASD — движение · Shift — бег · Space — прыжок\nМышь — камера · E — взаимодействие · F — транспорт\nM — карта · Tab — заказы · Esc — пауза\nСамолёт: Space — вверх · Ctrl — вниз · F — выход после посадки", 14, MUTED)
 	control_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	controls.add_child(control_hint)
 	var actions: HBoxContainer = HBoxContainer.new()
@@ -2543,7 +2586,7 @@ func _hide_layers() -> void :
 
 
 func _profile_line(profile: Dictionary) -> String:
-	var summary: String = "Уровень %d   ·   %d XP   ·   %s ₽\nВсего доставок: %d" % [int(profile.get("level", 1)), int(profile.get("xp", 0)), _amount(int(profile.get("money", 0))), int(profile.get("total_deliveries", 0))]
+	var summary: String = "Уровень %d   ·   %d XP   ·   %s ₸\nВсего доставок: %d" % [int(profile.get("level", 1)), int(profile.get("xp", 0)), _amount(int(profile.get("money", 0))), int(profile.get("total_deliveries", 0))]
 	var owned_names: Array[String] = []
 	for vehicle_type: String in VEHICLE_TYPES:
 		if _owns_vehicle(profile, vehicle_type):
@@ -2705,7 +2748,7 @@ func show_results(stats: Dictionary, leaderboard: Array = []) -> void :
 	var deliveries: int = int(stats.get("deliveries", 0))
 	_results_title.text = "Хорошая работа, курьер!" if deliveries > 0 else "Первый шаг сделан."
 	_results_summary.text = "Смена завершена · время %s" % _time(float(stats.get("time_used", 0.0)))
-	_results_numbers.text = "Доставки     %d\nЗаработано   %s ₽\nОпыт             +%d XP\nЛучшая доставка   %s ₽" % [deliveries, _amount(int(stats.get("money", 0))), int(stats.get("xp", 0)), _amount(int(stats.get("best_delivery", 0)))]
+	_results_numbers.text = "Доставки     %d\nЗаработано   %s ₸\nОпыт             +%d XP\nЛучшая доставка   %s ₸" % [deliveries, _amount(int(stats.get("money", 0))), int(stats.get("xp", 0)), _amount(int(stats.get("best_delivery", 0)))]
 	_update_team_results(stats)
 	var entries: Array = leaderboard if not leaderboard.is_empty() else stats.get("leaderboard", [])
 	for child: Node in _leaderboard_rows.get_children():
@@ -2773,12 +2816,12 @@ func set_orders(orders: Array[Dictionary]) -> void :
 		var fragile: bool = String(order.get("type", "")) == "fragile"
 		var base_reward: int = maxi(0, int(order.get("reward", 0)))
 		var quality_bonus: int = maxi(0, int(order.get("quality_bonus", 0))) if fragile else 0
-		var reward_text: String = "до %s ₽" % _amount(base_reward + quality_bonus) if fragile else "%s ₽" % _amount(base_reward)
+		var reward_text: String = "до %s ₸" % _amount(base_reward + quality_bonus) if fragile else "%s ₸" % _amount(base_reward)
 		var reward: Label = _label(reward_text, 20)
 		reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		action.add_child(reward)
 		if fragile:
-			var bonus_hint: Label = _label("Качество: до +%s ₽" % _amount(quality_bonus), 12, MUTED)
+			var bonus_hint: Label = _label("Качество: до +%s ₸" % _amount(quality_bonus), 12, MUTED)
 			bonus_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 			action.add_child(bonus_hint)
 		var locked: bool = bool(order.get("locked", false))
@@ -2833,7 +2876,7 @@ func _time(seconds: float) -> String:
 
 func update_hud(data: Dictionary, other_players: Array = []) -> void :
 	_last_data = data.duplicate()
-	_money.text = "%s ₽" % _amount(int(data.get("money", 0)))
+	_money.text = "%s ₸" % _amount(int(data.get("money", 0)))
 	_xp_level.text = "Уровень %d · %d XP" % [int(data.get("level", 1)), int(data.get("xp", 0))]
 	_rank.text = String(data.get("rank", "Rookie Courier"))
 	_timer.text = _time(float(data.get("shift_remaining", 0.0)))
@@ -2858,7 +2901,12 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 	var active_vehicle: String = String(data.get("active_vehicle", "walking"))
 	var riding: bool = active_vehicle in VEHICLE_TYPES
 	_vehicle.text = "%s · %d км/ч" % [_vehicle_name(active_vehicle), roundi(absf(float(data.get("vehicle_speed", 0.0))) * 3.6)] if riding else "Пешком"
-	if active_vehicle == "car":
+	if active_vehicle == "airplane":
+		var altitude: float = maxf(0.0, float(data.get("vehicle_altitude", 0.0)))
+		var grounded: bool = bool(data.get("vehicle_grounded", altitude <= 0.5))
+		_vehicle.text += " · высота %d м · %s" % [roundi(altitude), "на земле" if grounded else "в полёте"]
+		_keys.text = "W/S тяга / тормоз · A/D поворот · Space ↑ · Ctrl ↓ · %s · Tab заказы · M карта · Esc пауза" % ("F выйти" if grounded else "F после посадки")
+	elif active_vehicle == "car":
 		_keys.text = "W/S газ / тормоз · A/D поворот · Space ручной тормоз · F выйти · Tab заказы · M карта · Esc пауза"
 	elif riding:
 		_keys.text = "W/S газ / тормоз · A/D поворот · F выйти · Tab заказы · M карта · Esc пауза"
@@ -2875,8 +2923,8 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 	var target_position: Vector3 = data.get("target_position", Vector3.ZERO)
 	_mini_map.update_positions(player_position, target_position, _has_active_order)
 	_full_map.update_positions(player_position, target_position, _has_active_order)
-	_mini_map.update_navigation(nav, float(data.get("player_yaw", 0.0)), String(data.get("order_state", "")) == "PickedUp")
-	_full_map.update_navigation(nav, float(data.get("player_yaw", 0.0)), String(data.get("order_state", "")) == "PickedUp")
+	_mini_map.update_navigation(nav, float(data.get("player_yaw", 0.0)), String(data.get("order_state", "")) == "PickedUp", active_vehicle)
+	_full_map.update_navigation(nav, float(data.get("player_yaw", 0.0)), String(data.get("order_state", "")) == "PickedUp", active_vehicle)
 	var peers: Array = other_players if not other_players.is_empty() else data.get("other_players", [])
 	var visible_peers: Array = []
 	var local_id: int = int(data.get("local_id", -1))

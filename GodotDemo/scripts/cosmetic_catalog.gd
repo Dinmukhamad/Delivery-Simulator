@@ -161,7 +161,7 @@ static func buy(profile: Dictionary, category: Variant, item_id: Variant) -> Dic
 		return {"ok": false, "changed": false, "message": "Уже куплено. Можно выбрать бесплатно."}
 	var money: Variant = profile.get("money", 0)
 	if not (money is int or money is float) or not is_finite(float(money)) or float(money) < float(price) or float(money) > 1000000000.0:
-		return {"ok": false, "changed": false, "message": "Недостаточно денег: нужно %d ₽." % price}
+		return {"ok": false, "changed": false, "message": "Недостаточно денег: нужно %d ₸." % price}
 	owned.append(key)
 	fields["owned_cosmetics"] = owned
 	fields["appearance"][category] = item_id

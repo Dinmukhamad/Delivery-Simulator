@@ -11,8 +11,8 @@ const DEFAULT_LEVEL_XP_STEP: int = 150
 
 static func code_catalog() -> Array[Dictionary]:
 	return [
-		{"code": "MONEY10000", "description": "+10 000 ₽"},
-		{"code": "MONEY50000", "description": "+50 000 ₽"},
+		{"code": "MONEY10000", "description": "+10 000 ₸"},
+		{"code": "MONEY50000", "description": "+50 000 ₸"},
 		{"code": "XP1000", "description": "+1 000 XP"},
 		{"code": "LEVELUP", "description": "+1 уровень, максимум 10"},
 		{"code": "DELIVERYMASTER", "description": "Уровень 10 — Delivery Master"},
@@ -47,7 +47,7 @@ static func apply(profile: Dictionary, raw_code: Variant, level_xp_step: int = D
 			var grant: int = 10000 if code == "MONEY10000" else 50000
 			var granted: int = mini(grant, MAX_PROFILE_VALUE - money)
 			money += granted
-			message = "+%d ₽. Деньги: %d ₽." % [granted, money] if granted > 0 else "Деньги уже достигли лимита 1 000 000 000 ₽."
+			message = "+%d ₸. Деньги: %d ₸." % [granted, money] if granted > 0 else "Деньги уже достигли лимита 1 000 000 000 ₸."
 		"XP1000":
 			var granted: int = mini(1000, MAX_PROFILE_VALUE - xp)
 			xp += granted

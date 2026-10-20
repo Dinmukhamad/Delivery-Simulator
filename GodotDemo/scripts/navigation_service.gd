@@ -260,6 +260,11 @@ func route(start: Vector3, target: Vector3, mode: String = "walking") -> Diction
 	var bounds: Rect2 = _layout.get("playable_bounds", _layout.get("bounds", Rect2()))
 	if _layout.is_empty() or bounds.size.x <= 1.0 or bounds.size.y <= 1.0 or not start.is_finite() or not target.is_finite():
 		return {"points": empty, "distance": 0.0, "status": "no_route", "walk_last": false}
+	if mode == "airplane":
+		# An airborne course is a bearing, not a promise of obstacle-free flight.
+		# Keep the existing street graph exclusively for ground transport.
+		var course: Array[Vector3] = [_world(_xz(start)), _world(_xz(target))]
+		return {"points": course, "distance": start.distance_to(target), "status": "ok", "walk_last": true, "airborne": true, "access": target}
 	var grid: SafeGrid = _profile(mode)
 	var a: Vector2 = _xz(start)
 	var b: Vector2 = _xz(target)
@@ -339,6 +344,14 @@ func guidance(position: Vector3, target: Vector3, key: String, mode: String) -> 
 	if key.is_empty():
 		clear()
 		return {"points": [], "distance": 0.0, "status": "idle", "hint": "", "walk_last": false}
+	if mode == "airplane":
+		var course: Dictionary = route(position, target, mode)
+		if course.get("status", "no_route") == "no_route":
+			course["hint"] = "Нет воздушного курса"
+			return course
+		var nearby: bool = _xz(position).distance_to(_xz(target)) <= 12.0
+		course["hint"] = "Над адресом · посадка рядом, затем пешком" if nearby else "Воздушный курс · облетайте здания"
+		return course
 	position.y = 0.0
 	target.y = 0.0
 	var now: int = Time.get_ticks_msec()

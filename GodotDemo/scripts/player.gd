@@ -33,6 +33,9 @@ var _excluded_vehicle_rid: = RID()
 var _riding_active: = false
 var _camera_yaw: = 0.0
 var _camera_pitch: = deg_to_rad(-18.0)
+var _camera_height: = 1.5
+var _camera_follow_position: = Vector3.ZERO
+var _camera_follow_initialized: = false
 var _sensitivity: = 1.0
 var _gait_phase: = 0.0
 var _spawn: = Vector3.ZERO
@@ -89,12 +92,14 @@ func _ready() -> void :
 func _physics_process(delta: float) -> void :
 	if _riding_active and not is_instance_valid(riding_vehicle):
 		set_riding_vehicle(null)
-	_update_camera_distance(delta)
 	if is_riding():
-
+		# Keep the courier's network position at the vehicle's full 3D pose.
+		# Mounted aircraft must bypass gravity, floor snapping and foot animation.
 		global_position = riding_vehicle.global_position
 		velocity = riding_vehicle.velocity if riding_vehicle is CharacterBody3D else Vector3.ZERO
+		_update_camera_distance(delta)
 		return
+	_update_camera_distance(delta)
 	if _is_remote:
 		global_position = global_position.lerp(_remote_target_position, 1.0 - exp(-18.0 * delta))
 		_visual.rotation.y = lerp_angle(_visual.rotation.y, _remote_target_yaw, 1.0 - exp(-14.0 * delta))
@@ -216,11 +221,16 @@ func _update_camera_distance(delta: float) -> void :
 		return
 	var target_distance: = 4.5
 	var target_height: = 1.5
+	var follow_aircraft: = false
 	if is_riding():
 		target_distance = 6.0
 		target_height = 1.7
 		var vehicle_definition: Variant = riding_vehicle.get("definition")
 		if vehicle_definition is Dictionary:
+			follow_aircraft = str(vehicle_definition.get("id", "")) == "airplane"
+			if follow_aircraft:
+				target_distance = 10.0
+				target_height = 2.2
 			var distance: Variant = vehicle_definition.get("camera_distance", target_distance)
 			var height: Variant = vehicle_definition.get("camera_height", target_height)
 			if (distance is float or distance is int) and is_finite(float(distance)) and float(distance) > 0.0:
@@ -229,7 +239,15 @@ func _update_camera_distance(delta: float) -> void :
 				target_height = float(height)
 	var blend: = 1.0 - exp(-8.0 * delta)
 	_camera_arm.spring_length = lerpf(_camera_arm.spring_length, target_distance, blend)
-	_camera_pivot.position.y = lerpf(_camera_pivot.position.y, target_height, blend)
+	_camera_height = lerpf(_camera_height, target_height, blend)
+	var target_position: = global_position + Vector3.UP * _camera_height
+	if follow_aircraft and _camera_follow_initialized:
+		# Smooth the camera anchor only; the courier and its pose remain exact.
+		_camera_follow_position = _camera_follow_position.lerp(target_position, 1.0 - exp(-16.0 * delta))
+	else:
+		_camera_follow_position = target_position
+	_camera_follow_initialized = true
+	_camera_pivot.global_position = _camera_follow_position
 
 
 func set_sensitivity(multiplier: float) -> void :
@@ -350,6 +368,7 @@ func correct_network_position(position: Vector3) -> void :
 			riding_vehicle.global_position = position
 	global_position = position
 	velocity = Vector3.ZERO
+	_camera_follow_initialized = false
 	if _is_remote:
 		_remote_target_position = position
 		_received_velocity = Vector3.ZERO

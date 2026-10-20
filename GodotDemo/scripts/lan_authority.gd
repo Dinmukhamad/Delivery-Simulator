@@ -28,6 +28,10 @@ const GARAGE_POSITION: = Vector3(-66.0, 0.0, 10.0)
 const GARAGE_DISTANCE: = 5.0
 const VEHICLE_ENTER_DISTANCE: = 2.8
 const VEHICLE_EXIT_SPEED: = 1.5
+const MAX_FLIGHT_ALTITUDE: = 60.0
+const FLIGHT_VERTICAL_EXIT_SPEED: = 0.75
+const FLIGHT_INITIAL_VERTICAL_CREDIT: = 0.65
+const FLIGHT_INITIAL_TURN_CREDIT: = 0.25
 const IMPACT_HISTORY_MSEC: = 250
 const CHEAT_REQUEST_BURST: float = 6.0
 const CHEAT_REQUESTS_PER_SECOND: float = 3.0
@@ -122,13 +126,15 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 		var spawn_row: int = floori(float(spawn_index) / 2.0)
 		var position: Vector3 = spawn + Vector3(float(spawn_index % 2) * 2.0, 0.0, float(spawn_row) * 2.0)
 		records[peer_id] = {
-			"id": peer_id, "name": display_name, "profile": profile, 
-			"active_order": {}, "shift_stats": _empty_shift_stats(), "connected": true, 
-			"position": position, "yaw": PI, "velocity": Vector3.ZERO, 
-			"grounded": true, "carrying": false, 
-			"vehicle": {}, "vehicle_speed": 0.0, "vehicle_generation": 0, 
-			"move_credit": INITIAL_MOVE_CREDIT, "pose_tick_msec": _started_at_msec, 
-			"pose_emit_msec": _started_at_msec - POSE_BROADCAST_MSEC, 
+			"id": peer_id, "name": display_name, "profile": profile,
+			"active_order": {}, "shift_stats": _empty_shift_stats(), "connected": true,
+			"position": position, "yaw": PI, "velocity": Vector3.ZERO,
+			"grounded": true, "carrying": false,
+			"vehicle": {}, "vehicle_speed": 0.0, "vehicle_generation": 0,
+			"move_credit": INITIAL_MOVE_CREDIT, "pose_tick_msec": _started_at_msec,
+			"flight_ascent_credit": FLIGHT_INITIAL_VERTICAL_CREDIT, "flight_descent_credit": FLIGHT_INITIAL_VERTICAL_CREDIT,
+			"flight_turn_credit": FLIGHT_INITIAL_TURN_CREDIT,
+			"pose_emit_msec": _started_at_msec - POSE_BROADCAST_MSEC,
 			"displacement_velocity": Vector3.ZERO, "impact_pose_msec": _started_at_msec
 		}
 		spawn_index += 1
@@ -246,9 +252,9 @@ func snapshot_for(peer_id: int) -> Dictionary:
 		DistrictEventRules.publish_order_fields(visible, _elapsed_seconds(now), phase == "playing", _district_event_config)
 		visible_orders.append(visible)
 	return {
-		"session_id": session_id, "revision": revision, "phase": phase, 
-		"remaining": _remaining_seconds(now), "orders": visible_orders, 
-		"active_order": active_order, "profile": profile, "shift_stats": shift_stats, 
+		"session_id": session_id, "revision": revision, "phase": phase,
+		"remaining": _remaining_seconds(now), "orders": visible_orders,
+		"active_order": active_order, "profile": profile, "shift_stats": shift_stats,
 		"players": _public_players(), "vehicles": _public_vehicles(), "leaderboard": _leaderboard(),
 		"team": _team_snapshot(peer_id), "handoffs": _handoff_snapshot(peer_id, now),
 		"district_event": _district_event_snapshot(now),
@@ -366,6 +372,8 @@ func _interact(peer_id: int) -> void :
 	if _is_riding(record):
 		_notice(peer_id, "Сначала остановитесь и выйдите из транспорта клавишей F.")
 		return
+	if not VehiclePlacement.is_near_floor(_world, record["position"]):
+		return
 	var active: Dictionary = record["active_order"]
 	if active.is_empty() or int(active.get("owner_id", 0)) != peer_id:
 		return
@@ -441,8 +449,8 @@ func _complete_delivery(peer_id: int, now: int) -> void :
 			_team_completed = true
 		_award_team_bonuses()
 	var level_notice: String = " · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""
-	var event_notice: String = " · Бонус обеденного часа +%d ₽" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
-	_notice(peer_id, "Доставка завершена! +%d ₽ · +%d XP%s%s" % [money, xp, event_notice, level_notice])
+	var event_notice: String = " · Бонус обеденного часа +%d ₸" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
+	_notice(peer_id, "Доставка завершена! +%d ₸ · +%d XP%s%s" % [money, xp, event_notice, level_notice])
 
 
 func _abandon_order(peer_id: int) -> void :
@@ -667,7 +675,7 @@ func _award_team_bonuses() -> void:
 		stats["team_bonus_money"] = money
 		stats["team_bonus_xp"] = xp
 		_record_best_shift(record)
-		_notice(peer_id, "Командный план выполнен! Ваш бонус: +%d ₽ · +%d XP." % [money, xp])
+		_notice(peer_id, "Командный план выполнен! Ваш бонус: +%d ₸ · +%d XP." % [money, xp])
 
 
 func _cheat_request(peer_id: int, payload: Dictionary) -> void:
@@ -746,7 +754,7 @@ func _buy_vehicle(peer_id: int, payload: Dictionary) -> void :
 		_notice(peer_id, "%s доступен с уровня %d." % [vehicle_name, required_level])
 		return
 	if int(profile["money"]) < price:
-		_notice(peer_id, "Недостаточно денег. %s стоит %d ₽." % [vehicle_name, price])
+		_notice(peer_id, "Недостаточно денег. %s стоит %d ₸." % [vehicle_name, price])
 		return
 	var placement: Dictionary = _find_vehicle_placement(peer_id, vehicle_id)
 	if placement.is_empty():
@@ -820,6 +828,9 @@ func _toggle_vehicle(peer_id: int, payload: Dictionary) -> void :
 		return
 	if _is_riding(record):
 		var current_velocity: Vector3 = record["velocity"]
+		if not _vehicle_at_floor(vehicle, current_velocity):
+			_notice(peer_id, "Для выхода сначала приземлитесь на свободную площадку и остановитесь.")
+			return
 		if maxf(Vector2(current_velocity.x, current_velocity.z).length(), float(record.get("vehicle_speed", 0.0))) > VEHICLE_EXIT_SPEED:
 			_notice(peer_id, "Остановитесь перед выходом из транспорта.")
 			return
@@ -832,6 +843,9 @@ func _toggle_vehicle(peer_id: int, payload: Dictionary) -> void :
 	else:
 		var position: Vector3 = record["position"]
 		var parked_position: Vector3 = vehicle["position"]
+		if not _vehicle_at_floor(vehicle, vehicle.get("velocity", Vector3.ZERO)):
+			_notice(peer_id, "Сесть в транспорт можно после его приземления.")
+			return
 		if position.distance_to(parked_position) > VEHICLE_ENTER_DISTANCE or not _has_line_of_sight(position, parked_position):
 			_notice(peer_id, "Подойдите ближе к своему транспорту.")
 			return
@@ -852,10 +866,23 @@ func _toggle_vehicle(peer_id: int, payload: Dictionary) -> void :
 	vehicle["grounded"] = true
 	vehicle["carrying"] = bool(record["carrying"]) if _is_riding(record) else false
 	record["move_credit"] = INITIAL_MOVE_CREDIT
+	_reset_flight_credit(record)
 	record["pose_tick_msec"] = Time.get_ticks_msec()
 	_reset_impact_history(record)
 	_emit_vehicle_state(peer_id)
 	_mark_changed()
+
+
+func _vehicle_at_floor(vehicle: Dictionary, velocity: Vector3) -> bool:
+	if not VehiclePlacement.is_near_floor(_world, vehicle.get("position", Vector3.INF)):
+		return false
+	return str(vehicle.get("type", "")) != "airplane" or (bool(vehicle.get("grounded", false)) and absf(velocity.y) <= FLIGHT_VERTICAL_EXIT_SPEED)
+
+
+func _reset_flight_credit(record: Dictionary) -> void:
+	record["flight_ascent_credit"] = FLIGHT_INITIAL_VERTICAL_CREDIT
+	record["flight_descent_credit"] = FLIGHT_INITIAL_VERTICAL_CREDIT
+	record["flight_turn_credit"] = FLIGHT_INITIAL_TURN_CREDIT
 
 
 func _owns_vehicle(record: Dictionary, vehicle_id: String) -> bool:
@@ -881,7 +908,7 @@ func _new_vehicle(peer_id: int, vehicle_id: String, position: Vector3, yaw: floa
 	records[peer_id]["vehicle_generation"] = generation
 	_reset_impact_history(records[peer_id])
 	return {
-		"owner_id": peer_id, "type": vehicle_id, "generation": generation, "position": position, "yaw": yaw, "occupied": false, 
+		"owner_id": peer_id, "type": vehicle_id, "generation": generation, "position": position, "yaw": yaw, "occupied": false,
 		"velocity": Vector3.ZERO, "grounded": true, "carrying": false,
 		"appearance": CosmeticCatalog.sanitize_profile(records[peer_id]["profile"])["appearance"]
 	}
@@ -972,7 +999,7 @@ func _advance_vehicle_generation(record: Dictionary) -> void :
 func _emit_vehicle_state(peer_id: int) -> void :
 	var record: Dictionary = records[peer_id]
 	event_ready.emit(peer_id, {
-		"type": "vehicle_state", "vehicle": record["vehicle"].duplicate(true), 
+		"type": "vehicle_state", "vehicle": record["vehicle"].duplicate(true),
 		"position": record["position"], "active_vehicle": _active_vehicle_type(record)
 	})
 
@@ -980,9 +1007,14 @@ func _emit_vehicle_state(peer_id: int) -> void :
 func _accept_pose(peer_id: int, payload: Dictionary) -> void :
 	var record: Dictionary = records[peer_id]
 	var expected_vehicle: String = _active_vehicle_type(record)
+	var airplane: bool = expected_vehicle == "airplane"
+	var definition: Dictionary = _vehicle_definition(expected_vehicle)
 
 
-	if payload.has("active_vehicle") and payload["active_vehicle"] != expected_vehicle:
+	if (airplane and not payload.has("active_vehicle")) or (payload.has("active_vehicle") and payload["active_vehicle"] != expected_vehicle):
+		_correct_position(peer_id)
+		return
+	if airplane and not payload.has("vehicle_generation"):
 		_correct_position(peer_id)
 		return
 	if _is_riding(record) and payload.has("vehicle_generation"):
@@ -1002,44 +1034,50 @@ func _accept_pose(peer_id: int, payload: Dictionary) -> void :
 	var position: Vector3 = position_value
 	var velocity: Vector3 = velocity_value
 	var yaw: float = float(yaw_value)
-	if not _finite_vector(position) or not _finite_vector(velocity) or not is_finite(yaw) or not _inside_bounds(position):
+	if not _finite_vector(position) or not _finite_vector(velocity) or not is_finite(yaw) or not _inside_bounds(position, minf(MAX_FLIGHT_ALTITUDE, float(definition.get("max_altitude", MAX_FLIGHT_ALTITUDE))) if airplane else 6.0):
 		_correct_position(peer_id)
 		return
 	var now: int = Time.get_ticks_msec()
 	var previous_position: Vector3 = record["position"]
 	var elapsed: float = maxf(0.0, float(now - int(record["pose_tick_msec"])) / 1000.0)
 	var riding: bool = _is_riding(record)
-	var allowed_speed: float = maxf(1.0, float(_vehicle_definition(expected_vehicle).get("max_speed", 13.0))) + 2.0 if riding else MAX_MOVE_SPEED
+	var allowed_speed: float = maxf(1.0, float(definition.get("max_speed", 13.0))) + 2.0 if riding else MAX_MOVE_SPEED
+	if airplane:
+		allowed_speed = minf(30.0, float(definition.get("max_speed", 30.0))) + 0.5
 	var maximum_credit: float = 3.5 if riding else MAX_MOVE_CREDIT
 	var credit: float = minf(maximum_credit, float(record["move_credit"]) + elapsed * allowed_speed)
 	record["pose_tick_msec"] = now
 	record["move_credit"] = credit
 	var travelled: float = previous_position.distance_to(position)
+	var horizontal_distance: float = Vector2(position.x - previous_position.x, position.z - previous_position.z).length()
 
 
-	if peer_id != 1 and travelled > credit:
+	if airplane:
+		if not _validate_flight_motion(record, position, velocity, yaw, elapsed, credit, definition):
+			_correct_position(peer_id)
+			return
+	elif peer_id != 1 and travelled > credit:
 		_correct_position(peer_id)
 		return
-	if travelled > 0.001 and not _has_line_of_sight(previous_position, position):
+	if not airplane and travelled > 0.001 and not _has_line_of_sight(previous_position, position):
 		_correct_position(peer_id)
 		return
-	if riding and (position.y > 0.8 or not _position_is_free(position, yaw, _vehicle_definition(expected_vehicle))):
+	if riding and not airplane and (position.y > 0.8 or not _position_is_free(position, yaw, definition)):
 		_correct_position(peer_id)
 		return
 
 
 	var impact_changed: bool = _apply_validated_impact(record, position, yaw, now, allowed_speed) if riding else false
-	if peer_id != 1:
-		record["move_credit"] = maxf(0.0, credit - travelled)
+	if peer_id != 1 or airplane:
+		record["move_credit"] = maxf(0.0, credit - (horizontal_distance if airplane else travelled))
 	record["position"] = position
 	record["yaw"] = wrapf(yaw, - PI, PI)
-	record["velocity"] = velocity.limit_length(allowed_speed + 1.0 if riding else 16.0)
-	record["grounded"] = bool(payload["grounded"])
+	record["velocity"] = velocity if airplane else velocity.limit_length(allowed_speed + 1.0 if riding else 16.0)
+	record["grounded"] = _flight_grounded(position, velocity) if airplane else bool(payload["grounded"])
 	if riding:
 		var vehicle: Dictionary = record["vehicle"]
 		vehicle["position"] = position
 		vehicle["yaw"] = record["yaw"]
-		var horizontal_distance: float = Vector2(position.x - previous_position.x, position.z - previous_position.z).length()
 		record["vehicle_speed"] = horizontal_distance / maxf(elapsed, 0.001) if peer_id != 1 else Vector2(velocity.x, velocity.z).length()
 	else:
 		record["vehicle_speed"] = 0.0
@@ -1053,16 +1091,49 @@ func _accept_pose(peer_id: int, payload: Dictionary) -> void :
 	if _cleanup_handoffs(now):
 		_mark_changed()
 	if impact_changed:
-		_notice(peer_id, "Хрупкая посылка повреждена: качество %d%% · бонус %d ₽." % [int(record["active_order"].get("quality", 100)), FragileRules.quality_bonus(record["active_order"])])
+		_notice(peer_id, "Хрупкая посылка повреждена: качество %d%% · бонус %d ₸." % [int(record["active_order"].get("quality", 100)), FragileRules.quality_bonus(record["active_order"])])
 		_mark_changed()
 	if now - int(record["pose_emit_msec"]) < POSE_BROADCAST_MSEC:
 		return
 	record["pose_emit_msec"] = now
 	pose_ready.emit(peer_id, {
-		"position": position, "yaw": record["yaw"], "velocity": record["velocity"], 
-		"grounded": record["grounded"], "carrying": carrying, 
+		"position": position, "yaw": record["yaw"], "velocity": record["velocity"],
+		"grounded": record["grounded"], "carrying": carrying,
 		"active_vehicle": _active_vehicle_type(record), "vehicle": record["vehicle"].duplicate(true)
 	})
+
+
+func _validate_flight_motion(record: Dictionary, position: Vector3, velocity: Vector3, yaw: float, elapsed: float, horizontal_credit: float, definition: Dictionary) -> bool:
+	var ascend_rate: float = minf(8.0, float(definition.get("ascend_rate", 8.0)))
+	var descend_rate: float = minf(6.0, float(definition.get("descend_rate", 6.0)))
+	var turn_rate: float = float(definition.get("steer_rate", 1.2))
+	var ascent_credit: float = minf(ascend_rate * 0.2 + 0.1, float(record.get("flight_ascent_credit", FLIGHT_INITIAL_VERTICAL_CREDIT)) + elapsed * ascend_rate)
+	var descent_credit: float = minf(descend_rate * 0.2 + 0.1, float(record.get("flight_descent_credit", FLIGHT_INITIAL_VERTICAL_CREDIT)) + elapsed * descend_rate)
+	var turn_credit: float = minf(0.45, float(record.get("flight_turn_credit", FLIGHT_INITIAL_TURN_CREDIT)) + elapsed * turn_rate)
+	# Store earned credit even after rejection. No tolerance is added per pose:
+	# sending more packets cannot manufacture climb or turn capacity.
+	record["flight_ascent_credit"] = ascent_credit
+	record["flight_descent_credit"] = descent_credit
+	record["flight_turn_credit"] = turn_credit
+	var displacement: Vector3 = position - Vector3(record["position"])
+	var turn: float = absf(angle_difference(float(record["yaw"]), yaw))
+	if position.y < -0.001 or Vector2(velocity.x, velocity.z).length() > minf(30.0, float(definition.get("max_speed", 30.0))) + 0.5 or velocity.y > ascend_rate + 0.1 or velocity.y < -descend_rate - 0.1:
+		return false
+	if Vector2(displacement.x, displacement.z).length() > horizontal_credit or displacement.y > ascent_credit or -displacement.y > descent_credit or turn > turn_credit:
+		return false
+	if not VehiclePlacement.flight_path_is_free(_world, record["position"], float(record["yaw"]), position, yaw, definition):
+		return false
+	record["flight_ascent_credit"] = maxf(0.0, ascent_credit - maxf(0.0, displacement.y))
+	record["flight_descent_credit"] = maxf(0.0, descent_credit - maxf(0.0, -displacement.y))
+	record["flight_turn_credit"] = maxf(0.0, turn_credit - turn)
+	return true
+
+
+func _flight_grounded(position: Vector3, velocity: Vector3) -> bool:
+	if absf(velocity.y) > FLIGHT_VERTICAL_EXIT_SPEED or not VehiclePlacement.is_near_floor(_world, position):
+		return false
+	var ground: Variant = VehiclePlacement.grounded_position(_world, position)
+	return ground is Vector3 and absf(position.y - (Vector3(ground).y - 0.1)) <= 0.15
 
 
 func _reset_impact_history(record: Dictionary) -> void :
@@ -1074,10 +1145,12 @@ func _apply_validated_impact(record: Dictionary, position: Vector3, yaw: float, 
 	var gap_msec: int = now - int(record.get("impact_pose_msec", now))
 	var previous_velocity: Vector3 = record.get("displacement_velocity", Vector3.ZERO)
 	var displacement: Vector3 = position - Vector3(record["position"])
-	displacement.y = 0.0
+	var airplane: bool = _active_vehicle_type(record) == "airplane"
+	if not airplane:
+		displacement.y = 0.0
 	var velocity: Vector3 = Vector3.ZERO
 	if gap_msec > 0 and gap_msec <= IMPACT_HISTORY_MSEC:
-		velocity = (displacement / maxf(0.025, float(gap_msec) / 1000.0)).limit_length(allowed_speed)
+		velocity = (displacement / maxf(0.025, float(gap_msec) / 1000.0)).limit_length(sqrt(allowed_speed * allowed_speed + 64.0) if airplane else allowed_speed)
 	else:
 		previous_velocity = Vector3.ZERO
 	record["displacement_velocity"] = velocity
@@ -1087,16 +1160,35 @@ func _apply_validated_impact(record: Dictionary, position: Vector3, yaw: float, 
 		return false
 	var definition: Dictionary = _vehicle_definition(_active_vehicle_type(record))
 	var normal: Vector3 = FragileRules.wall_normal(_world, definition, position, yaw)
-	if normal == Vector3.ZERO:
-		return false
 	var normal_speed: float = maxf(0.0, maxf( - velocity.dot(normal), - previous_velocity.dot(normal)))
+	if airplane:
+		var vertical_normal: Vector3 = _flight_vertical_contact_normal(definition, position, yaw)
+		normal_speed = maxf(normal_speed, maxf(-velocity.dot(vertical_normal), -previous_velocity.dot(vertical_normal)))
 	return FragileRules.apply_impact(active, normal_speed, now, _balance)
+
+
+func _flight_vertical_contact_normal(definition: Dictionary, position: Vector3, yaw: float) -> Vector3:
+	if not is_instance_valid(_world) or not _world.is_inside_tree():
+		return Vector3.ZERO
+	var height: float = float(definition.get("collision_height", 2.45))
+	var shape: = BoxShape3D.new()
+	shape.size = Vector3(float(definition.get("collision_width", 6.0)), height + 0.12, float(definition.get("collision_length", 5.3)))
+	var query: = PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.transform = Transform3D(Basis(Vector3.UP, yaw), position + Vector3.UP * height * 0.5)
+	query.collision_mask = 1
+	query.margin = 0.0
+	var contact: Dictionary = _world.get_world_3d().direct_space_state.get_rest_info(query)
+	if contact.is_empty():
+		return Vector3.ZERO
+	var normal: Vector3 = contact.get("normal", Vector3.ZERO)
+	return normal.normalized() if _finite_vector(normal) and absf(normal.y) >= 0.6 else Vector3.ZERO
 
 
 func _correct_position(peer_id: int) -> void :
 	var record: Dictionary = records[peer_id]
 	event_ready.emit(peer_id, {
-		"type": "correction", "position": record["position"], 
+		"type": "correction", "position": record["position"],
 		"active_vehicle": _active_vehicle_type(record), "vehicle": record["vehicle"].duplicate(true)
 	})
 
@@ -1105,8 +1197,8 @@ func _has_line_of_sight(from: Vector3, to: Vector3) -> bool:
 	return VehiclePlacement.has_line_of_sight(_world, from, to)
 
 
-func _inside_bounds(position: Vector3) -> bool:
-	return CityLayout.contains_position(position) and position.y >= -1.0 and position.y <= 6.0
+func _inside_bounds(position: Vector3, maximum_height: float = 6.0) -> bool:
+	return CityLayout.contains_position(position) and position.y >= -1.0 and position.y <= maximum_height
 
 
 func _finite_vector(value: Vector3) -> bool:
@@ -1219,8 +1311,8 @@ func _public_players() -> Array[Dictionary]:
 		var record: Dictionary = records[peer_id]
 		var profile: Dictionary = record["profile"]
 		players.append({
-			"id": int(peer_id), "name": record["name"], "level": int(profile["level"]), "rank": str(profile["rank"]), 
-			"position": record["position"], "carrying": bool(record["carrying"]), "connected": bool(record["connected"]), 
+			"id": int(peer_id), "name": record["name"], "level": int(profile["level"]), "rank": str(profile["rank"]),
+			"position": record["position"], "yaw": float(record["yaw"]), "carrying": bool(record["carrying"]), "connected": bool(record["connected"]),
 			"active_vehicle": _active_vehicle_type(record),
 			"appearance": CosmeticCatalog.sanitize_profile(profile)["appearance"],
 			"has_order": not record["active_order"].is_empty(),
@@ -1247,7 +1339,7 @@ func _leaderboard() -> Array[Dictionary]:
 		var record: Dictionary = records[peer_id]
 		var stats: Dictionary = record["shift_stats"]
 		rows.append({
-			"id": int(peer_id), "name": record["name"], "money": int(stats["money"]), "xp": int(stats["xp"]), 
+			"id": int(peer_id), "name": record["name"], "money": int(stats["money"]), "xp": int(stats["xp"]),
 			"deliveries": int(stats["deliveries"]), "best_delivery": int(stats["best_delivery"]), "connected": bool(record["connected"]),
 			"team_bonus_money": int(stats.get("team_bonus_money", 0)), "team_bonus_xp": int(stats.get("team_bonus_xp", 0)),
 			"event_deliveries": int(stats.get("event_deliveries", 0)), "event_bonus_money": int(stats.get("event_bonus_money", 0))

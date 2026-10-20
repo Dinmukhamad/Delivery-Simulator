@@ -9,7 +9,7 @@ const EVENT_VOLUMES: = {
 	"delivery": -10.0, "level_up": -10.0, "purchase": -9.0, "ui_click": -13.0, 
 }
 const AUDIO_NAMES: Array[String] = ["footstep", "order_accept", "pickup", "delivery", 
-	"level_up", "purchase", "ui_click", "scooter_engine", "car_engine", "music"]
+	"level_up", "purchase", "ui_click", "scooter_engine", "car_engine", "airplane_engine", "music"]
 
 var test_mode: = false
 var _initialized: = false
@@ -203,7 +203,7 @@ func _mounted_motor_type() -> String:
 	if not (definition is Dictionary):
 		return ""
 	var type: = str(definition.get("id", ""))
-	return type if type in ["scooter", "car"] else ""
+	return type if type in ["scooter", "car", "airplane"] else ""
 
 
 func _sync_engine(delta: float) -> void :

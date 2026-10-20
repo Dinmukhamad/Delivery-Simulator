@@ -225,7 +225,7 @@ func run_host() -> void:
 		return
 	var client_profile: Dictionary = app.lan_authority.get_profile(client_id)
 	check(int(client_profile["money"]) == START_MONEY + 70000 and int(client_profile["xp"]) == 12150 and int(client_profile["level"]) == 10 and client_profile["rank"] == "Delivery Master", "Host validates Client fixed grants and Delivery Master progression")
-	check(client_profile["owned_vehicles"].has("bicycle") and client_profile["owned_vehicles"].has("scooter") and client_profile["owned_vehicles"].has("car") and client_profile["selected_vehicle"] == "", "ALLVEHICLES grants inventory without selecting or spawning a vehicle")
+	check(client_profile["owned_vehicles"].has("bicycle") and client_profile["owned_vehicles"].has("scooter") and client_profile["owned_vehicles"].has("car") and client_profile["owned_vehicles"].has("airplane") and client_profile["selected_vehicle"] == "", "ALLVEHICLES grants inventory without selecting or spawning a vehicle")
 	no_earned_credit(client_profile, app.lan_authority.records[client_id]["shift_stats"], "Host-confirmed Client")
 	var public_ready: bool = await wait_for(func() -> bool: return int(public_player(client_id).get("level", 0)) == 10 and public_player(client_id).get("rank", "") == "Delivery Master")
 	check(public_ready and public_player(client_id).get("appearance") == CLIENT_STYLE, "Updated Client level/rank reaches the public roster with unchanged cosmetics")
@@ -298,7 +298,7 @@ func run_client() -> void:
 	await submit_dialog("DELIVERYMASTER")
 	check(int(app.profile["xp"]) == 12150 and int(app.profile["level"]) == 10 and app.profile["rank"] == "Delivery Master", "DELIVERYMASTER reaches the canonical maximum rank")
 	await submit_dialog("ALLVEHICLES")
-	check(app.profile["owned_vehicles"].size() == 3 and app.profile["owned_vehicles"].has("bicycle") and app.profile["owned_vehicles"].has("scooter") and app.profile["owned_vehicles"].has("car") and app.profile["selected_vehicle"] == "" and app.vehicles.is_empty(), "Inventory cheat owns all shipped vehicles without changing selection or spawning")
+	check(app.profile["owned_vehicles"].size() == app.vehicle_defs.size() and app.profile["owned_vehicles"].has("bicycle") and app.profile["owned_vehicles"].has("scooter") and app.profile["owned_vehicles"].has("car") and app.profile["owned_vehicles"].has("airplane") and app.profile["selected_vehicle"] == "" and app.vehicles.is_empty(), "Inventory cheat owns all shipped vehicles without changing selection or spawning")
 	check(json_value(app.active_order) == active_before, "All cheat confirmations preserve the active standard order")
 	check(json_value(app.profile["appearance"]) == appearance_before and json_value(app.profile["owned_cosmetics"]) == cosmetics_before and app.player.get_appearance() == CLIENT_STYLE, "All cheat confirmations preserve cosmetic inventory and the visible courier")
 	check(cheat_results.size() == 9, "Client receives only its own two rejections and seven cheat results")

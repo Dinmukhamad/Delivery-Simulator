@@ -70,6 +70,9 @@ var _collision_shape: BoxShape3D
 var _remote_steering_initialized: = false
 var _brake_lights: Array[StandardMaterial3D] = []
 var _last_visual_speed: = 0.0
+var _propeller: Node3D
+var _propeller_speed: = 0.0
+var _flight_lifted: = false
 
 
 func configure(vehicle_definition: Dictionary, vehicle_owner_peer_id: int = 0, remote: bool = false) -> void :
@@ -106,6 +109,7 @@ func _ready() -> void :
 	match str(definition.get("id", "bicycle")):
 		"scooter": _build_scooter()
 		"car": _build_car()
+		"airplane": _build_airplane()
 		_: _build_bicycle()
 	_build_identity_label()
 	set_occupied(occupied)
@@ -120,7 +124,10 @@ func _physics_process(delta: float) -> void :
 		global_position = global_position.lerp(_target_position, 1.0 - exp(-18.0 * delta))
 		var previous_yaw: = rotation.y
 		rotation.y = lerp_angle(rotation.y, _target_yaw, 1.0 - exp(-14.0 * delta))
-		if _remote_steering_initialized and delta > 0.0 and absf(speed) > 0.3:
+		if is_airplane() and _remote_steering_initialized and delta > 0.0:
+			var turn_direction: = -1.0 if speed < -0.3 else 1.0
+			_steering = clampf(-angle_difference(previous_yaw, rotation.y) / (delta * _value("steer_rate", 1.2) * turn_direction), -1.0, 1.0)
+		elif _remote_steering_initialized and delta > 0.0 and absf(speed) > 0.3:
 			_steering = clampf( - angle_difference(previous_yaw, rotation.y) / (delta * _value("steer_rate", 2.2) * signf(speed)), -1.0, 1.0)
 		else:
 			_steering = 0.0
@@ -150,7 +157,11 @@ func _physics_process(delta: float) -> void :
 			speed = move_toward(speed, 0.0, 2.4 * delta)
 		_steering = Input.get_action_strength("move_right") - Input.get_action_strength("move_left")
 		var moving_factor: = clampf(absf(speed) / 3.0, 0.0, 1.0)
-		var next_yaw: = rotation.y - _steering * _value("steer_rate", 2.2) * moving_factor * signf(speed) * delta
+		var turn_direction: = signf(speed)
+		if is_airplane() and not is_on_floor():
+			moving_factor = maxf(0.65, moving_factor)
+			turn_direction = -1.0 if speed < -0.3 else 1.0
+		var next_yaw: = rotation.y - _steering * _value("steer_rate", 2.2) * moving_factor * turn_direction * delta
 		if _rotation_is_free(next_yaw):
 			rotation.y = next_yaw
 	else:
@@ -158,7 +169,9 @@ func _physics_process(delta: float) -> void :
 	var forward: = - global_basis.z
 	velocity.x = forward.x * speed
 	velocity.z = forward.z * speed
-	if not is_on_floor():
+	if is_airplane() and occupied:
+		_update_flight_velocity(delta)
+	elif not is_on_floor():
 		velocity.y -= GRAVITY * delta
 	elif velocity.y < 0.0:
 		velocity.y = -0.1
@@ -166,27 +179,77 @@ func _physics_process(delta: float) -> void :
 
 
 	var incoming_horizontal_velocity: = Vector3(velocity.x, 0.0, velocity.z)
+	var incoming_velocity: = velocity
 	move_and_slide()
 	if occupied and controls_enabled:
 		var strongest_impact: = 0.0
 		for index in range(get_slide_collision_count()):
 			var normal: = get_slide_collision(index).get_normal()
-			if absf(normal.y) < 0.6:
+			if is_airplane():
+				strongest_impact = maxf(strongest_impact, -incoming_velocity.dot(normal))
+			elif absf(normal.y) < 0.6:
 				strongest_impact = maxf(strongest_impact, - incoming_horizontal_velocity.dot(normal))
 		if strongest_impact > 0.0:
 			impact.emit(strongest_impact)
 
 	if is_on_wall():
 		speed = Vector2(velocity.x, velocity.z).dot(Vector2(forward.x, forward.z))
-	if absf(global_position.x) > WORLD_BOUND or absf(global_position.z) > WORLD_BOUND:
-		global_position.x = clampf(global_position.x, - WORLD_BOUND, WORLD_BOUND)
-		global_position.z = clampf(global_position.z, - WORLD_BOUND, WORLD_BOUND)
+	var horizontal_limits: = _horizontal_limits()
+	if absf(global_position.x) > horizontal_limits.x or absf(global_position.z) > horizontal_limits.y:
+		global_position.x = clampf(global_position.x, -horizontal_limits.x, horizontal_limits.x)
+		global_position.z = clampf(global_position.z, -horizontal_limits.y, horizontal_limits.y)
 		speed = 0.0
 		velocity.x = 0.0
 		velocity.z = 0.0
 	if global_position.y < -10.0:
 		reset_at(_spawn)
 	_animate(delta)
+
+
+func is_airplane() -> bool:
+	return str(definition.get("id", "")) == "airplane"
+
+
+# Roof support is not a safe exit: delivery interaction and the courier still
+# use street level placement. Remote vehicles use the existing grounded pose.
+func can_disembark() -> bool:
+	if not is_airplane():
+		return true
+	var grounded: = _remote_grounded if _remote else is_on_floor()
+	var vertical_speed: = _received_velocity.y if _remote else velocity.y
+	return grounded and global_position.y <= 0.65 and absf(vertical_speed) <= 0.75
+
+
+func _update_flight_velocity(delta: float) -> void:
+	var lift: = 0.0
+	if controls_enabled:
+		lift = Input.get_action_strength("jump") - Input.get_action_strength("flight_descend")
+	# Assisted lift allows a small courier plane to leave a narrow street even
+	# at a standstill. Releasing both controls holds height until landing.
+	if lift > 0.0:
+		_flight_lifted = true
+	elif is_on_floor():
+		_flight_lifted = false
+	if lift == 0.0 and not _flight_lifted and not is_on_floor():
+		velocity.y -= GRAVITY * delta
+	else:
+		velocity.y = lift * _value("ascend_rate", 8.0) if lift > 0.0 else lift * _value("descend_rate", 6.0)
+	if is_on_floor() and velocity.y <= 0.0:
+		velocity.y = -0.1
+	var ceiling: = minf(60.0, _value("max_altitude", 60.0))
+	if delta > 0.0:
+		velocity.y = minf(velocity.y, maxf(0.0, ceiling - global_position.y) / delta)
+
+
+func _horizontal_limits() -> Vector2:
+	if not is_airplane():
+		return Vector2(WORLD_BOUND, WORLD_BOUND)
+	# Keep the entire yaw-only collision footprint inside the authored city.
+	var half_width: = _value("collision_width", 6.0) * 0.5
+	var half_length: = _value("collision_length", 5.3) * 0.5
+	var c: = absf(cos(rotation.y))
+	var s: = absf(sin(rotation.y))
+	return Vector2(minf(WORLD_BOUND, CityLayout.HALF_SIZE - half_width * c - half_length * s), minf(WORLD_BOUND, CityLayout.HALF_SIZE - half_width * s - half_length * c))
 
 
 func set_occupied(value: bool) -> void :
@@ -198,7 +261,10 @@ func set_occupied(value: bool) -> void :
 	if is_instance_valid(_parcel):
 		_parcel.visible = is_carrying and occupied
 	if is_instance_valid(_identity_label):
-		_identity_label.position.y = (2.3 if is_carrying and occupied else 1.9) if str(definition.get("id", "")) == "car" else (2.48 if value else 1.65)
+		if is_airplane():
+			_identity_label.position.y = 3.1 if value else 2.6
+		else:
+			_identity_label.position.y = (2.3 if is_carrying and occupied else 1.9) if str(definition.get("id", "")) == "car" else (2.48 if value else 1.65)
 
 
 func set_controls_enabled(enabled: bool) -> void :
@@ -335,6 +401,7 @@ func correct_network_position(position: Vector3, yaw: float = NAN) -> void :
 	_target_position = position
 	_target_yaw = rotation.y
 	_received_velocity = Vector3.ZERO
+	_flight_lifted = is_airplane() and position.y > 0.65
 	_pose_initialized = true
 	reset_physics_interpolation()
 
@@ -343,7 +410,10 @@ func _value(key: String, fallback: float) -> float:
 	var supplied: Variant = definition.get(key, fallback)
 	if not (supplied is float or supplied is int) or not is_finite(float(supplied)):
 		return fallback
-	return maxf(0.01, float(supplied))
+	var value: = maxf(0.01, float(supplied))
+	if is_airplane() and VehicleCatalog.AIRPLANE_LIMITS.has(key):
+		return minf(value, float(VehicleCatalog.AIRPLANE_LIMITS[key]))
+	return value
 
 
 func _rotation_is_free(yaw: float) -> bool:
@@ -507,6 +577,107 @@ func _build_car() -> void :
 	_make_parcel(Vector3(0, 1.84, 0.43), Vector3(0.69, 0.43, 0.58))
 
 
+
+
+func _build_airplane() -> void:
+	_visual = Node3D.new()
+	_visual.name = "AirCourierVisual"
+	add_child(_visual)
+	_wheel_radius = 0.27
+	var paint: = _material(Color("#ecb248"))
+	var trim: = _material(Color("#c77735"))
+	_register_paint_materials(paint, trim)
+	var cream: = _material(Color("#fff2d5"))
+	var dark: = _material(Color("#263747"))
+	var rubber: = _material(Color("#202b36"))
+	var metal: = _material(Color("#c1ced2"), 0.45, 0.35)
+	var glass: = _material(Color(0.40, 0.71, 0.80, 0.62), 0.1, 0.22)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	_ellipsoid(_visual, "RoundedFuselage", Vector3(1.17, 1.19, 3.85), Vector3(0, 1.04, -0.34), paint)
+	_ellipsoid(_visual, "TaperedTailBoom", Vector3(0.57, 0.62, 2.45), Vector3(0, 1.08, 1.18), paint)
+	_ellipsoid(_visual, "EngineCowling", Vector3(1.04, 1.03, 0.83), Vector3(0, 1.08, -1.85), trim)
+	var engine_ring: = _cylinder(_visual, "EngineRing", 0.44, 0.12, Vector3(0, 1.08, -2.20), metal, 24)
+	engine_ring.rotation.x = PI / 2.0
+	for side in [-1.0, 1.0]:
+		for vent in range(4):
+			_box(_visual, "EngineCoolingVent", Vector3(0.025, 0.16, 0.055), Vector3(side * 0.505, 1.08, -1.97 + float(vent) * 0.15), dark, 0.012)
+		_tube(_visual, "FuselagePinstripe", Vector3(side * 0.56, 1.10, -1.3), Vector3(side * 0.29, 1.15, 1.43), 0.026, cream, 8)
+		_box(_visual, "AirMailBadge", Vector3(0.022, 0.24, 0.37), Vector3(side * 0.588, 1.18, 0.59), cream, 0.045)
+		_box(_visual, "AirMailBadgeStripe", Vector3(0.03, 0.045, 0.22), Vector3(side * 0.604, 1.18, 0.59), trim, 0.012)
+
+	_box(_visual, "RoundedMainWing", Vector3(5.8, 0.20, 1.35), Vector3(0, 0.99, -0.34), paint, 0.09)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "WingTipPaint", Vector3(0.30, 0.205, 1.28), Vector3(side * 2.72, 1.0, -0.34), trim, 0.09)
+		_box(_visual, "WingStripe", Vector3(0.18, 0.014, 1.14), Vector3(side * 2.39, 1.10, -0.34), cream, 0.006)
+		_box(_visual, "AileronSeam", Vector3(1.79, 0.014, 0.018), Vector3(side * 1.73, 1.10, 0.12), trim, 0.005)
+		for rib in range(3):
+			_box(_visual, "WingRib", Vector3(0.018, 0.014, 0.99), Vector3(side * (0.93 + float(rib) * 0.53), 1.10, -0.37), cream, 0.005)
+		_tube(_visual, "WingSupport", Vector3(side * 0.39, 0.61, -0.39), Vector3(side * 1.92, 0.90, -0.39), 0.036, metal)
+		var navigation_color: = Color("#ee7165") if side < 0.0 else Color("#76cea0")
+		_ellipsoid(_visual, "WingNavigationLamp", Vector3(0.12, 0.12, 0.18), Vector3(side * 2.87, 1.03, -0.61), _lamp(navigation_color))
+	_box(_visual, "Tailplane", Vector3(2.35, 0.13, 0.75), Vector3(0, 1.24, 1.95), paint, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "TailplaneTip", Vector3(0.22, 0.14, 0.69), Vector3(side * 1.05, 1.245, 1.95), trim, 0.055)
+		_box(_visual, "ElevatorSeam", Vector3(0.88, 0.013, 0.02), Vector3(side * 0.61, 1.314, 2.15), cream, 0.005)
+	var fin: = _box(_visual, "RoundedTailFin", Vector3(0.16, 1.14, 0.83), Vector3(0, 1.66, 1.94), paint, 0.075)
+	fin.rotation.x = -0.14
+	_box(_visual, "Rudder", Vector3(0.17, 0.75, 0.21), Vector3(0, 1.69, 2.23), trim, 0.07)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "FinInsignia", Vector3(0.014, 0.18, 0.30), Vector3(side * 0.091, 1.86, 1.98), cream, 0.035)
+	_ellipsoid(_visual, "TailLamp", Vector3(0.09, 0.09, 0.12), Vector3(0, 1.30, 2.40), _lamp(cream.albedo_color))
+
+	# A short windscreen and an open cockpit keep the actual courier visible.
+	_box(_visual, "CockpitWell", Vector3(0.84, 0.13, 1.14), Vector3(0, 1.51, 0.13), dark, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "CockpitRim", Vector3(0.075, 0.10, 1.21), Vector3(side * 0.45, 1.59, 0.13), cream, 0.035)
+	_box(_visual, "CockpitRearRim", Vector3(0.91, 0.11, 0.10), Vector3(0, 1.59, 0.69), cream, 0.04)
+	_box(_visual, "PilotSeat", Vector3(0.55, 0.16, 0.62), Vector3(0, 1.38, 0.39), dark, 0.065)
+	_box(_visual, "PilotSeatBack", Vector3(0.56, 0.46, 0.14), Vector3(0, 1.61, 0.65), trim, 0.06)
+	var windscreen: = _box(_visual, "CockpitWindscreen", Vector3(0.96, 0.40, 0.04), Vector3(0, 1.79, -0.50), glass, 0.018)
+	windscreen.rotation.x = -0.23
+	_tube(_visual, "WindscreenTopFrame", Vector3(-0.48, 1.98, -0.55), Vector3(0.48, 1.98, -0.55), 0.022, cream)
+	for side in [-1.0, 1.0]:
+		_tube(_visual, "WindscreenSideFrame", Vector3(side * 0.47, 1.59, -0.46), Vector3(side * 0.47, 1.98, -0.55), 0.022, cream)
+	_box(_visual, "InstrumentPanel", Vector3(0.71, 0.22, 0.10), Vector3(0, 1.58, -0.37), dark, 0.04)
+	for side in [-1.0, 0.0, 1.0]:
+		var dial: = _cylinder(_visual, "FlightInstrument", 0.065, 0.015, Vector3(side * 0.19, 1.61, -0.31), cream)
+		dial.rotation.x = PI / 2.0
+		_box(_visual, "InstrumentNeedle", Vector3(0.013, 0.058, 0.012), Vector3(side * 0.19, 1.62, -0.297), trim, 0.004)
+	_tube(_visual, "ControlColumn", Vector3(0, 1.33, -0.18), Vector3(0, 1.64, -0.48), 0.033, metal)
+	_tube(_visual, "PilotYoke", Vector3(-0.38, 1.64, -0.48), Vector3(0.38, 1.64, -0.48), 0.039, dark)
+
+	for side in [-1.0, 1.0]:
+		_tube(_visual, "MainLandingStrut", Vector3(side * 0.35, 0.72, -0.39), Vector3(side * 0.88, 0.27, -0.48), 0.045, metal)
+		_box(_visual, "LandingStrutFairing", Vector3(0.20, 0.37, 0.21), Vector3(side * 0.75, 0.48, -0.46), trim, 0.075)
+		_wheels.append(_motor_wheel(_visual, "MainLandingWheel", Vector3(side * 0.88, 0.27, -0.48), 0.27, 0.17, rubber, metal))
+	_tube(_visual, "NoseLandingStrut", Vector3(0, 0.64, -1.56), Vector3(0, 0.22, -1.67), 0.039, metal)
+	var nose_steering: = Node3D.new()
+	nose_steering.name = "NoseWheelSteering"
+	nose_steering.position = Vector3(0, 0.22, -1.67)
+	_visual.add_child(nose_steering)
+	_wheels.append(_motor_wheel(nose_steering, "NoseWheel", Vector3.ZERO, 0.22, 0.14, rubber, metal))
+	_front_pivots.append(nose_steering)
+	_ellipsoid(_visual, "LandingLight", Vector3(0.23, 0.19, 0.055), Vector3(0, 0.84, -2.20), _lamp(Color("#fff3d2")))
+
+	_propeller = Node3D.new()
+	_propeller.name = "SpinningPropeller"
+	_propeller.position = Vector3(0, 1.08, -2.36)
+	_visual.add_child(_propeller)
+	_box(_propeller, "PropellerBlade", Vector3(0.15, 1.76, 0.07), Vector3.ZERO, dark, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_propeller, "PropellerTip", Vector3(0.153, 0.22, 0.074), Vector3(0, side * 0.75, 0), cream, 0.055)
+	_ellipsoid(_propeller, "PropellerSpinner", Vector3(0.34, 0.34, 0.40), Vector3(0, 0, -0.085), paint)
+	_box(_visual, "RearCargoTray", Vector3(0.73, 0.07, 0.62), Vector3(0, 1.43, 1.10), metal, 0.025)
+	_make_parcel(Vector3(0, 1.65, 1.10), Vector3(0.61, 0.38, 0.48))
+	_build_rider()
+	_rider.position = Vector3(0, 0.25, 0.25)
+	for index in range(_upper_legs.size()):
+		var side: = -1.0 if index == 0 else 1.0
+		_place_tube(_upper_legs[index], Vector3(side * 0.14, 1.17, 0.27), Vector3(side * 0.22, 0.98, -0.10))
+		_place_tube(_lower_legs[index], Vector3(side * 0.22, 0.98, -0.10), Vector3(side * 0.23, 0.77, -0.35))
+		_feet[index].position = Vector3(side * 0.23, 0.75, -0.41)
 
 
 func _make_parcel(origin: Vector3, dimensions: Vector3) -> void :
@@ -782,6 +953,9 @@ func _animate(delta: float) -> void :
 	for lamp: StandardMaterial3D in _brake_lights:
 		lamp.emission_energy_multiplier = 0.5 if braking else 0.12
 	_last_visual_speed = speed
+	if is_airplane():
+		_animate_airplane(delta)
+		return
 	if str(definition.get("id", "bicycle")) != "bicycle" or not is_instance_valid(_crank):
 		return
 	if occupied and absf(speed) > 0.1:
@@ -796,6 +970,20 @@ func _animate(delta: float) -> void :
 		_place_tube(_upper_legs[index], hip, knee)
 		_place_tube(_lower_legs[index], knee, ankle)
 		_feet[index].position = ankle + Vector3(0, -0.015, -0.045)
+
+
+func _animate_airplane(delta: float) -> void:
+	if not is_instance_valid(_visual):
+		return
+	var airborne: = occupied and (not _remote_grounded if _remote else not is_on_floor())
+	var pitch: = clampf(velocity.y / _value("ascend_rate", 8.0), -1.0, 1.0) * 0.12 if airborne else 0.0
+	var bank: = -_steering * 0.23 if airborne else 0.0
+	_visual.rotation.x = lerp_angle(_visual.rotation.x, pitch, 1.0 - exp(-5.0 * delta))
+	_visual.rotation.z = lerp_angle(_visual.rotation.z, bank, 1.0 - exp(-5.0 * delta))
+	if is_instance_valid(_propeller):
+		var target_spin: = 32.0 + absf(speed) * 1.3 if occupied else 0.0
+		_propeller_speed = move_toward(_propeller_speed, target_spin, 70.0 * delta)
+		_propeller.rotation.z = fmod(_propeller.rotation.z + _propeller_speed * delta, TAU)
 
 
 func _wheel(parent: Node3D, mesh_name: String, center: Vector3, tire: StandardMaterial3D, rim: StandardMaterial3D) -> Node3D:

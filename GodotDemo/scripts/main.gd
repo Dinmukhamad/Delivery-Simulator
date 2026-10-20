@@ -17,7 +17,7 @@ const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
 const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const CheatCodeRules = preload("res://scripts/cheat_code_rules.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.14.0"
+const DEMO_VERSION: = "0.15.0"
 
 var city
 var player
@@ -162,7 +162,7 @@ func _define_input() -> void :
 	var bindings: Dictionary = {
 		"move_left": KEY_A, "move_right": KEY_D, 
 		"move_forward": KEY_W, "move_back": KEY_S, 
-		"sprint": KEY_SHIFT, "jump": KEY_SPACE
+		"sprint": KEY_SHIFT, "jump": KEY_SPACE, "flight_descend": KEY_CTRL
 	}
 	for action in bindings:
 		if not InputMap.has_action(action):
@@ -434,6 +434,8 @@ func _target_position() -> Vector3:
 func _can_interact() -> bool:
 	if active_order.is_empty() or state != "playing" or not modal.is_empty() or player.is_riding():
 		return false
+	if not VehiclePlacementScript.is_near_floor(city, player.global_position):
+		return false
 	var target: Vector3 = _target_position()
 	var position: Vector3 = player.global_position
 	position.y = 0.0
@@ -509,8 +511,8 @@ func _complete_delivery() -> void :
 	_play_sound("delivery")
 	if int(profile["level"]) > previous_level:
 		_play_sound("level_up")
-	var event_notice: String = " · Бонус обеденного часа +%d ₽" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
-	hud.notify("Доставка завершена! +%d ₽ · +%d XP%s%s" % [money, xp, event_notice,
+	var event_notice: String = " · Бонус обеденного часа +%d ₸" % event_bonus if event_bonus > 0 else (" · Заказ события: обычная награда" if DistrictEventRules.is_event_order(completed) else "")
+	hud.notify("Доставка завершена! +%d ₸ · +%d XP%s%s" % [money, xp, event_notice,
 		" · Новый уровень %d!" % int(profile["level"]) if int(profile["level"]) > previous_level else ""])
 	if not saved:
 		hud.notify("Доставка засчитана, но файл прогресса не удалось записать.")
@@ -550,6 +552,9 @@ func _update_hud() -> void :
 		interaction = "W/S — газ / тормоз · A/D — поворот · F — выйти после остановки"
 		if _active_vehicle_name() == "car":
 			interaction += " · Space — ручной тормоз"
+		elif _active_vehicle_name() == "airplane":
+			interaction = "W/S — газ / тормоз · A/D — поворот · Space — взлёт · Ctrl — снижение"
+			interaction += " · F — выйти" if player.riding_vehicle.can_disembark() else " · Для выхода приземлитесь и остановитесь"
 	elif _near_garage():
 		interaction = "E — открыть гараж"
 	elif _nearest_vehicle_owner() >= 0:
@@ -577,6 +582,8 @@ func _update_hud() -> void :
 		"target_position": _target_position(), "has_target": not active_order.is_empty(), 
 		"other_players": _other_player_map_positions(), 
 		"active_vehicle": _active_vehicle_name(), 
+		"vehicle_altitude": maxf(0.0, player.riding_vehicle.global_position.y) if player.is_riding() else 0.0,
+		"vehicle_grounded": player.riding_vehicle.can_disembark() and VehiclePlacementScript.is_near_floor(city, player.riding_vehicle.global_position) if player.is_riding() else true,
 		"order_type": str(active_order.get("type", "")), 
 		"order_state": str(active_order.get("state", "")), 
 		"quality": float(active_order.get("quality", 100.0)), 
@@ -868,7 +875,7 @@ func _active_vehicle_name() -> String:
 
 
 func _vehicle_label(type: String) -> String:
-	return str({"bicycle": "Велосипед", "scooter": "Скутер", "car": "Автомобиль"}.get(type, "Транспорт"))
+	return str({"bicycle": "Велосипед", "scooter": "Скутер", "car": "Автомобиль", "airplane": "Самолёт Air Courier"}.get(type, "Транспорт"))
 
 
 func _next_vehicle_generation(owner_id: int) -> int:
@@ -1096,7 +1103,7 @@ func _buy_vehicle(type: String) -> void :
 		hud.notify("%s открывается на уровне %d." % [label, int(definition["required_level"])])
 		return
 	if int(profile["money"]) < int(definition["price"]):
-		hud.notify("Недостаточно денег: %s стоит %d ₽." % [label.to_lower(), int(definition["price"])])
+		hud.notify("Недостаточно денег: %s стоит %d ₸." % [label.to_lower(), int(definition["price"])])
 		return
 	var yaw: float = float(player.get_network_pose().get("yaw", PI))
 	var parking: Variant = VehiclePlacementScript.find_spawn(city, player.global_position, yaw, [], definition)
@@ -1160,6 +1167,9 @@ func _toggle_vehicle(owner_id: int = -1) -> void :
 		hud.notify("Ваш уровень пока не позволяет использовать этот транспорт.")
 		return
 	if player.is_riding():
+		if not vehicle.can_disembark() or not VehiclePlacementScript.is_near_floor(city, vehicle.global_position):
+			hud.notify("Для выхода сначала приземлитесь на свободную площадку и остановитесь.")
+			return
 		if absf(float(vehicle.speed)) > 1.5:
 			hud.notify("Сначала остановите транспорт клавишей S.")
 			return
@@ -1172,6 +1182,9 @@ func _toggle_vehicle(owner_id: int = -1) -> void :
 		vehicle.set_controls_enabled(false)
 		player.correct_network_position(exit_position)
 	else:
+		if not vehicle.can_disembark() or not VehiclePlacementScript.is_near_floor(city, vehicle.global_position):
+			hud.notify("Сесть в транспорт можно после его приземления.")
+			return
 		if player.global_position.distance_to(vehicle.global_position) > 2.8 or not VehiclePlacementScript.has_line_of_sight(city, player.global_position, vehicle.global_position):
 			hud.notify("Подойдите ближе к своему транспорту.")
 			return
@@ -1246,7 +1259,7 @@ func _on_vehicle_impact(normal_speed: float, owner_id: int) -> void :
 	if _lan_active() or state != "playing" or not modal.is_empty() or owner_id != 0 or not player.is_riding():
 		return
 	if FragileRules.apply_impact(active_order, normal_speed, Time.get_ticks_msec(), balance):
-		hud.notify("Хрупкий груз: состояние %d%% · бонус %d ₽" % [int(round(float(active_order["quality"]))), FragileRules.quality_bonus(active_order)])
+		hud.notify("Хрупкий груз: состояние %d%% · бонус %d ₸" % [int(round(float(active_order["quality"]))), FragileRules.quality_bonus(active_order)])
 		_update_hud()
 
 
@@ -1672,7 +1685,9 @@ func _other_player_map_positions() -> Array:
 	for peer_id in remote_players:
 		var avatar = remote_players[peer_id]
 		var member: Dictionary = lan_session.members.get(peer_id, {}) if _lan_active() else {}
-		positions.append({"id": int(peer_id), "name": str(member.get("name", "Courier")), "position": avatar.global_position})
+		var map_pose: Dictionary = avatar.get_network_pose()
+		var vehicle_type: String = str(avatar.riding_vehicle.definition.get("id", "walking")) if avatar.is_riding() else "walking"
+		positions.append({"id": int(peer_id), "name": str(member.get("name", "Courier")), "position": avatar.global_position, "active_vehicle": vehicle_type, "yaw": float(map_pose.get("yaw", 0.0))})
 	return positions
 
 
