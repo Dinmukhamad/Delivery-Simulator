@@ -26,6 +26,7 @@ var controls_enabled: = false
 var speed: = 0.0
 var remote_mode: = false
 var is_carrying: = false
+var combat_health: int = 100
 
 var _remote: = false
 var _visual: Node3D
@@ -73,6 +74,9 @@ var _last_visual_speed: = 0.0
 var _propeller: Node3D
 var _propeller_speed: = 0.0
 var _flight_lifted: = false
+var _damage_smoke: Node3D
+var _damage_smoke_puffs: Array[MeshInstance3D] = []
+var _damage_smoke_phase: float = 0.0
 
 
 func configure(vehicle_definition: Dictionary, vehicle_owner_peer_id: int = 0, remote: bool = false) -> void :
@@ -208,6 +212,13 @@ func _physics_process(delta: float) -> void :
 
 func is_airplane() -> bool:
 	return str(definition.get("id", "")) == "airplane"
+
+
+func set_combat_health(value: int) -> void:
+	# Only authoritative snapshots change health; these puffs are decorative.
+	combat_health = clampi(value, 0, 100)
+	if is_instance_valid(_damage_smoke):
+		_damage_smoke.visible = combat_health > 0 and combat_health <= 50
 
 
 # Roof support is not a safe exit: delivery interaction and the courier still
@@ -617,6 +628,12 @@ func _build_airplane() -> void:
 		_tube(_visual, "WingSupport", Vector3(side * 0.39, 0.61, -0.39), Vector3(side * 1.92, 0.90, -0.39), 0.036, metal)
 		var navigation_color: = Color("#ee7165") if side < 0.0 else Color("#76cea0")
 		_ellipsoid(_visual, "WingNavigationLamp", Vector3(0.12, 0.12, 0.18), Vector3(side * 2.87, 1.03, -0.61), _lamp(navigation_color))
+		# Compact arcade guns stay inside the existing wing collision footprint.
+		var gun: = _cylinder(_visual, "WingGunBarrelLeft" if side < 0.0 else "WingGunBarrelRight", 0.055, 0.77, Vector3(side * 1.18, 0.88, -1.02), dark, 12)
+		gun.rotation.x = PI / 2.0
+		var muzzle: = _cylinder(_visual, "WingGunMuzzle", 0.075, 0.11, Vector3(side * 1.18, 0.88, -1.44), metal, 12)
+		muzzle.rotation.x = PI / 2.0
+		_box(_visual, "WingGunFairing", Vector3(0.21, 0.18, 0.56), Vector3(side * 1.18, 0.89, -0.55), trim, 0.07)
 	_box(_visual, "Tailplane", Vector3(2.35, 0.13, 0.75), Vector3(0, 1.24, 1.95), paint, 0.06)
 	for side in [-1.0, 1.0]:
 		_box(_visual, "TailplaneTip", Vector3(0.22, 0.14, 0.69), Vector3(side * 1.05, 1.245, 1.95), trim, 0.055)
@@ -678,6 +695,14 @@ func _build_airplane() -> void:
 		_place_tube(_upper_legs[index], Vector3(side * 0.14, 1.17, 0.27), Vector3(side * 0.22, 0.98, -0.10))
 		_place_tube(_lower_legs[index], Vector3(side * 0.22, 0.98, -0.10), Vector3(side * 0.23, 0.77, -0.35))
 		_feet[index].position = Vector3(side * 0.23, 0.75, -0.41)
+	_damage_smoke = Node3D.new()
+	_damage_smoke.name = "AircraftDamageSmoke"
+	_visual.add_child(_damage_smoke)
+	var smoke_material: = _material(Color("#4b505b"))
+	for index in range(3):
+		var puff: = _ellipsoid(_damage_smoke, "DamageSmokePuff", Vector3(0.34, 0.34, 0.34), Vector3.ZERO, smoke_material)
+		_damage_smoke_puffs.append(puff)
+	set_combat_health(combat_health)
 
 
 func _make_parcel(origin: Vector3, dimensions: Vector3) -> void :
@@ -984,6 +1009,13 @@ func _animate_airplane(delta: float) -> void:
 		var target_spin: = 32.0 + absf(speed) * 1.3 if occupied else 0.0
 		_propeller_speed = move_toward(_propeller_speed, target_spin, 70.0 * delta)
 		_propeller.rotation.z = fmod(_propeller.rotation.z + _propeller_speed * delta, TAU)
+	if is_instance_valid(_damage_smoke) and _damage_smoke.visible:
+		_damage_smoke_phase = fmod(_damage_smoke_phase + delta * 0.8, 1.0)
+		for index in range(_damage_smoke_puffs.size()):
+			var phase: = fmod(_damage_smoke_phase + float(index) / 3.0, 1.0)
+			var puff: MeshInstance3D = _damage_smoke_puffs[index]
+			puff.position = Vector3(sin(phase * TAU + float(index)) * 0.22, 1.45 + phase * 1.2, -1.6 + phase * 1.7)
+			puff.scale = Vector3.ONE * (0.35 + sin(phase * PI) * 1.5)
 
 
 func _wheel(parent: Node3D, mesh_name: String, center: Vector3, tire: StandardMaterial3D, rim: StandardMaterial3D) -> Node3D:

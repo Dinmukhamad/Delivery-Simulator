@@ -16,8 +16,10 @@ const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
 const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const CheatCodeRules = preload("res://scripts/cheat_code_rules.gd")
+const AircraftCombatRules = preload("res://scripts/aircraft_combat_rules.gd")
+const CombatEffectsScript = preload("res://scripts/combat_effects.gd")
 const SAVE_PATH: = "user://profile.json"
-const DEMO_VERSION: = "0.15.0"
+const DEMO_VERSION: = "0.16.0"
 
 var city
 var player
@@ -65,6 +67,13 @@ var _has_lan_started: bool = false
 var settings_service
 var navigation
 var audio_manager
+var combat_effects
+var _network_air_combat: Dictionary = {}
+var _aircraft_fire_armed: bool = false
+var _last_aircraft_fire_msec: int = -1000
+var _last_aircraft_shot_id: int = 0
+var _solo_aircraft_shot_id: int = 0
+var _vehicle_generation_floor: Dictionary = {}
 
 func _ready() -> void :
 	test_mode = OS.get_cmdline_user_args().has("--test-mode")
@@ -147,6 +156,9 @@ func _ready() -> void :
 	audio_manager.name = "AudioManager"
 	add_child(audio_manager)
 	audio_manager.initialize(test_mode)
+	combat_effects = CombatEffectsScript.new()
+	combat_effects.name = "CombatEffects"
+	add_child(combat_effects)
 	hud.ui_click_requested.connect( func() -> void : _play_sound("ui_click"))
 	_reset_shift_stats()
 	hud.show_menu(profile)
@@ -170,11 +182,17 @@ func _define_input() -> void :
 		var event: = InputEventKey.new()
 		event.physical_keycode = bindings[action]
 		InputMap.action_add_event(action, event)
+	if not InputMap.has_action("aircraft_fire"):
+		InputMap.add_action("aircraft_fire")
+	var fire_button: = InputEventMouseButton.new()
+	fire_button.button_index = MOUSE_BUTTON_LEFT
+	InputMap.action_add_event("aircraft_fire", fire_button)
 
 func _process(delta: float) -> void :
 	if hud == null or player == null:
 		return
 	audio_manager.set_context(state == "playing" and modal.is_empty(), player, player.riding_vehicle, remote_players)
+	_update_aircraft_fire()
 	if _lan_active():
 		if state in ["playing", "paused"] and lan_session.phase == "playing":
 			var now: int = Time.get_ticks_msec()
@@ -248,9 +266,18 @@ func _input(event: InputEvent) -> void :
 		elif state == "playing" and modal.is_empty() and key == KEY_F:
 			_toggle_vehicle()
 			get_viewport().set_input_as_handled()
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		if state == "playing" and modal.is_empty() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-			player.set_mouse_captured(true)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if not event.pressed:
+			_aircraft_fire_armed = false
+		elif state == "playing" and modal.is_empty():
+			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+				# A click that captures the pointer must never also fire a weapon.
+				_aircraft_fire_armed = false
+				player.set_mouse_captured(true)
+			else:
+				_aircraft_fire_armed = _can_fire_aircraft()
+				if _aircraft_fire_armed:
+					_request_aircraft_fire()
 
 func _notification(what: int) -> void :
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -569,6 +596,7 @@ func _update_hud() -> void :
 	elif not _handoff_candidates().is_empty():
 		interaction += " · Tab — передать другу"
 	var pose: Dictionary = player.get_network_pose()
+	var aim: Dictionary = _aircraft_aim_view()
 	hud.update_hud({
 		"team": _network_team, "handoffs": handoffs,
 		"district_event": _district_event_view(), "order_event": _order_event_view(),
@@ -581,7 +609,10 @@ func _update_hud() -> void :
 		"carrying": player.is_carrying, "player_position": player.global_position, 
 		"target_position": _target_position(), "has_target": not active_order.is_empty(), 
 		"other_players": _other_player_map_positions(), 
-		"active_vehicle": _active_vehicle_name(), 
+		"active_vehicle": _active_vehicle_name(),
+		"vehicle_health": int(player.riding_vehicle.combat_health) if player.is_riding() else AircraftCombatRules.MAX_HEALTH,
+		"air_kills": int(_network_air_combat.get("kills", 0)), "air_losses": int(_network_air_combat.get("losses", 0)),
+		"can_fire": _can_fire_aircraft(), "aim_screen": aim.get("position", Vector2.ZERO), "aim_visible": bool(aim.get("visible", false)),
 		"vehicle_altitude": maxf(0.0, player.riding_vehicle.global_position.y) if player.is_riding() else 0.0,
 		"vehicle_grounded": player.riding_vehicle.can_disembark() and VehiclePlacementScript.is_near_floor(city, player.riding_vehicle.global_position) if player.is_riding() else true,
 		"order_type": str(active_order.get("type", "")), 
@@ -879,7 +910,8 @@ func _vehicle_label(type: String) -> String:
 
 
 func _next_vehicle_generation(owner_id: int) -> int:
-	return int(vehicles[owner_id].get_meta("generation", 0)) + 1 if vehicles.has(owner_id) else 1
+	var current: int = int(vehicles[owner_id].get_meta("generation", 0)) if vehicles.has(owner_id) else 0
+	return maxi(current, int(_vehicle_generation_floor.get(owner_id, 0))) + 1
 
 
 func _network_pose() -> Dictionary:
@@ -894,6 +926,8 @@ func _near_garage() -> bool:
 
 
 func _set_gameplay_controls(enabled: bool) -> void :
+	if not enabled:
+		_aircraft_fire_armed = false
 	if not enabled and is_instance_valid(audio_manager):
 		audio_manager.stop_gameplay()
 	player.set_controls_enabled(enabled)
@@ -1212,6 +1246,8 @@ func _upsert_vehicle(owner_id: int, data: Dictionary, force_transform: bool = fa
 	if not vehicle_defs.has(type):
 		return
 	var generation: int = maxi(0, int(data.get("generation", 0)))
+	if generation < int(_vehicle_generation_floor.get(owner_id, 0)):
+		return
 	if vehicles.has(owner_id):
 		if generation < int(vehicles[owner_id].get_meta("generation", 0)):
 			return
@@ -1237,6 +1273,7 @@ func _upsert_vehicle(owner_id: int, data: Dictionary, force_transform: bool = fa
 		incoming.erase("yaw")
 		incoming.erase("velocity")
 	vehicle.apply_network_state(incoming)
+	vehicle.set_combat_health(int(data.get("health", AircraftCombatRules.MAX_HEALTH)))
 	if created or force_transform or replaced_generation or previous_occupied != occupied:
 		vehicle.reset_at(data.get("position", vehicle.global_position), float(data.get("yaw", vehicle.rotation.y)))
 	vehicle.set_occupied(occupied)
@@ -1293,6 +1330,7 @@ func _remove_vehicle(owner_id: int) -> void :
 
 
 func _clear_vehicles() -> void :
+	_reset_aircraft_combat()
 	if is_instance_valid(audio_manager):
 		audio_manager.stop_gameplay()
 	for owner_id in vehicles.keys():
@@ -1513,6 +1551,9 @@ func _on_lan_state(data: Dictionary) -> void :
 	_network_handoffs = data.get("handoffs", {}).duplicate(true)
 	_network_district_event = data.get("district_event", {}).duplicate(true)
 	_network_order_event = data.get("order_event", {}).duplicate(true)
+	_network_air_combat = data.get("air_combat", {}).duplicate(true)
+	shift_stats["air_kills"] = int(_network_air_combat.get("kills", 0))
+	shift_stats["air_losses"] = int(_network_air_combat.get("losses", 0))
 	var received_orders: Array = data.get("orders", [])
 	var orders_changed: bool = _order_list_signature(orders) != _order_list_signature(received_orders)
 	orders.assign(received_orders)
@@ -1591,17 +1632,40 @@ func _on_lan_event(event: Dictionary) -> void :
 		return
 	if event.has("session_id") and str(event["session_id"]) != lan_session.session_id:
 		return
+	if str(event.get("type", event.get("kind", ""))) == "aircraft_shot":
+		_display_aircraft_shot(event)
+		return
+	if str(event.get("type", "")) == "aircraft_recovery":
+		var owner_id: int = _local_vehicle_owner()
+		var recovery_generation: int = int(event.get("generation", 0))
+		if recovery_generation < int(_vehicle_generation_floor.get(owner_id, 0)) or (vehicles.has(owner_id) and int(vehicles[owner_id].get_meta("generation", 0)) > recovery_generation):
+			return
+		_vehicle_generation_floor[owner_id] = maxi(int(_vehicle_generation_floor.get(owner_id, 0)), recovery_generation)
+		_remove_vehicle(owner_id)
+		_aircraft_fire_armed = false
+		var recovery_position: Variant = event.get("position")
+		if recovery_position is Vector3 and recovery_position.is_finite():
+			player.correct_network_position(recovery_position)
+		hud.notify(str(event.get("message", "Самолёт сбит! Ваш курьер спасён у гаража.")))
+		_update_hud()
+		return
 	if str(event.get("type", "notice")) == "vehicle_state":
 		var vehicle_data: Variant = event.get("vehicle", {})
-		if vehicle_data is Dictionary and not vehicle_data.is_empty():
-			_upsert_vehicle(_local_vehicle_owner(), vehicle_data, true)
+		if vehicle_data is Dictionary:
+			if vehicle_data.is_empty():
+				_remove_vehicle(_local_vehicle_owner())
+			else:
+				_upsert_vehicle(_local_vehicle_owner(), vehicle_data, true)
 		var confirmed_position: Variant = event.get("position")
 		if confirmed_position is Vector3:
 			player.correct_network_position(confirmed_position)
 	elif str(event.get("type", "notice")) == "correction":
 		var vehicle_data: Variant = event.get("vehicle", {})
-		if vehicle_data is Dictionary and not vehicle_data.is_empty():
-			_upsert_vehicle(_local_vehicle_owner(), vehicle_data, true)
+		if vehicle_data is Dictionary:
+			if vehicle_data.is_empty():
+				_remove_vehicle(_local_vehicle_owner())
+			else:
+				_upsert_vehicle(_local_vehicle_owner(), vehicle_data, true)
 		var position_value: Variant = event.get("position")
 		if position_value is Vector3:
 			player.correct_network_position(position_value)
@@ -1672,11 +1736,19 @@ func _on_lan_pose(peer_id: int, pose: Dictionary) -> void :
 	if remote_players.has(peer_id):
 		var vehicle_data: Variant = pose.get("vehicle", {})
 		if vehicle_data is Dictionary and not vehicle_data.is_empty():
+			if int(vehicle_data.get("generation", 0)) < int(_vehicle_generation_floor.get(peer_id, 0)):
+				return
 			if vehicles.has(peer_id) and int(vehicle_data.get("generation", 0)) < int(vehicles[peer_id].get_meta("generation", 0)):
 				return
 			_upsert_vehicle(peer_id, vehicle_data)
 			if vehicles.has(peer_id):
 				vehicles[peer_id].apply_network_state(vehicle_data)
+		elif vehicle_data is Dictionary and vehicle_data.is_empty() and str(pose.get("active_vehicle", "walking")) == "walking" and int(pose.get("vehicle_generation", 0)) > 0:
+			var walking_generation: int = int(pose["vehicle_generation"])
+			if walking_generation < int(_vehicle_generation_floor.get(peer_id, 0)) or (vehicles.has(peer_id) and int(vehicles[peer_id].get_meta("generation", 0)) > walking_generation):
+				return
+			_vehicle_generation_floor[peer_id] = maxi(int(_vehicle_generation_floor.get(peer_id, 0)), walking_generation)
+			_remove_vehicle(peer_id)
 		remote_players[peer_id].apply_network_pose(pose)
 
 
@@ -1825,3 +1897,124 @@ func _decline_handoff(sender_id: int, offer_id: int) -> void:
 
 func _cancel_handoff() -> void:
 	_request_handoff("cancel_handoff")
+
+
+# Aircraft guns always follow the fuselage heading. Camera orbit changes only
+# the projected aim marker, never the authoritative shot direction.
+func _aircraft_aim_view() -> Dictionary:
+	if player == null or not player.is_riding() or _active_vehicle_name() != "airplane" or not is_instance_valid(player.camera):
+		return {"position": Vector2.ZERO, "visible": false}
+	var vehicle = player.riding_vehicle
+	var muzzle: Vector3 = AircraftCombatRules.muzzle(vehicle.global_position, vehicle.rotation.y)
+	var direction: Vector3 = AircraftCombatRules.shot_direction(vehicle.rotation.y)
+	var distance: float = AircraftCombatRules.RANGE
+	var obstruction: Dictionary = city.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(muzzle, muzzle + direction * distance, 1))
+	if not obstruction.is_empty():
+		distance = muzzle.distance_to(obstruction["position"])
+	# Project the visible first hit, so a nearby opponent aligns with the marker
+	# despite the third-person camera's offset from the nose. This is UI only;
+	# the Host independently validates the eventual shot and damage.
+	for other in vehicles.values():
+		if other == vehicle or not is_instance_valid(other) or not other.is_airplane() or not bool(other.occupied) or other.global_position.y < AircraftCombatRules.MIN_COMBAT_ALTITUDE or int(other.combat_health) <= 0:
+			continue
+		distance = minf(distance, AircraftCombatRules.ray_hit_distance(muzzle, direction, other.global_position, other.rotation.y, other.definition))
+	var target: Vector3 = muzzle + direction * distance
+	if player.camera.is_position_behind(target):
+		return {"position": Vector2.ZERO, "visible": false}
+	var screen: Vector2 = player.camera.unproject_position(target)
+	return {"position": screen, "visible": get_viewport().get_visible_rect().grow(-24.0).has_point(screen)}
+
+
+func _can_fire_aircraft() -> bool:
+	if state != "playing" or not modal.is_empty() or player == null or not player.is_riding() or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		return false
+	var vehicle = player.riding_vehicle
+	return _active_vehicle_name() == "airplane" and vehicle.owner_peer_id == _local_vehicle_owner() and bool(vehicle.controls_enabled) and bool(vehicle.occupied) and vehicle.global_position.y >= AircraftCombatRules.MIN_COMBAT_ALTITUDE and int(vehicle.combat_health) > 0
+
+
+func _update_aircraft_fire() -> void:
+	if not _can_fire_aircraft():
+		_aircraft_fire_armed = false
+		return
+	if _aircraft_fire_armed and Input.is_action_pressed("aircraft_fire"):
+		_request_aircraft_fire()
+
+
+func _request_aircraft_fire() -> void:
+	if not _can_fire_aircraft():
+		return
+	var now: int = Time.get_ticks_msec()
+	if now - _last_aircraft_fire_msec < AircraftCombatRules.COOLDOWN_MSEC:
+		return
+	_last_aircraft_fire_msec = now
+	var vehicle = player.riding_vehicle
+	if _lan_active():
+		# Give Host the latest validated pose before asking to fire. No target,
+		# reward, damage amount or arbitrary direction is accepted from a client.
+		lan_session.send_pose(_network_pose())
+		lan_session.request_action("aircraft_fire", {"generation": int(vehicle.get_meta("generation", 0))})
+		return
+	var origin: Vector3 = AircraftCombatRules.muzzle(vehicle.global_position, vehicle.rotation.y)
+	var endpoint: Vector3 = origin + AircraftCombatRules.shot_direction(vehicle.rotation.y) * AircraftCombatRules.RANGE
+	var ray: = PhysicsRayQueryParameters3D.create(origin, endpoint, 1)
+	ray.hit_from_inside = true
+	var obstruction: Dictionary = city.get_world_3d().direct_space_state.intersect_ray(ray)
+	if not obstruction.is_empty():
+		endpoint = obstruction["position"]
+	var nose_ray: = PhysicsRayQueryParameters3D.create(vehicle.global_position + Vector3.UP * AircraftCombatRules.MUZZLE_HEIGHT, origin, 1)
+	nose_ray.hit_from_inside = true
+	var nose_obstruction: Dictionary = city.get_world_3d().direct_space_state.intersect_ray(nose_ray)
+	if not nose_obstruction.is_empty():
+		origin = nose_obstruction["position"]
+		endpoint = origin
+	_solo_aircraft_shot_id += 1
+	_display_aircraft_shot({"type": "aircraft_shot", "shot_id": _solo_aircraft_shot_id, "shooter_id": _local_vehicle_owner(), "shooter_generation": int(vehicle.get_meta("generation", 0)), "from": origin, "to": endpoint, "hit_id": 0, "health": 0, "destroyed": false, "target_position": endpoint})
+
+
+func _display_aircraft_shot(event: Dictionary) -> void:
+	if state not in ["playing", "paused"] or not is_instance_valid(combat_effects):
+		return
+	var shot_id: int = int(event.get("shot_id", 0))
+	if shot_id <= _last_aircraft_shot_id:
+		return
+	var shooter_id: int = int(event.get("shooter_id", -1))
+	if _lan_active() and not lan_session.members.has(shooter_id):
+		return
+	if vehicles.has(shooter_id) and int(event.get("shooter_generation", 0)) != int(vehicles[shooter_id].get_meta("generation", 0)):
+		return
+	var from: Variant = event.get("from")
+	var to: Variant = event.get("to")
+	if not from is Vector3 or not to is Vector3 or not from.is_finite() or not to.is_finite():
+		return
+	_last_aircraft_shot_id = shot_id
+	combat_effects.show_shot(event)
+	if shooter_id == _local_vehicle_owner():
+		_play_sound("aircraft_fire")
+	var target_id: int = int(event.get("hit_id", 0))
+	if target_id <= 0:
+		return
+	if target_id == _local_vehicle_owner() or shooter_id == _local_vehicle_owner():
+		_play_sound("aircraft_hit")
+	if vehicles.has(target_id) and int(event.get("target_generation", 0)) == int(vehicles[target_id].get_meta("generation", 0)):
+		vehicles[target_id].set_combat_health(int(event.get("health", 0)))
+	if shooter_id == _local_vehicle_owner():
+		hud.notify_aircraft_hit(bool(event.get("destroyed", false)))
+	if bool(event.get("destroyed", false)):
+		var destroyed_generation: int = int(event.get("target_generation", 0))
+		_vehicle_generation_floor[target_id] = maxi(int(_vehicle_generation_floor.get(target_id, 0)), destroyed_generation + 1)
+		# A delayed event for the old airframe must not remove a newly spawned one.
+		if not vehicles.has(target_id) or int(vehicles[target_id].get_meta("generation", 0)) <= destroyed_generation:
+			_remove_vehicle(target_id)
+			if target_id == _local_vehicle_owner():
+				_aircraft_fire_armed = false
+
+
+func _reset_aircraft_combat() -> void:
+	_aircraft_fire_armed = false
+	_last_aircraft_fire_msec = -1000
+	_last_aircraft_shot_id = 0
+	_solo_aircraft_shot_id = 0
+	_vehicle_generation_floor.clear()
+	_network_air_combat.clear()
+	if is_instance_valid(combat_effects):
+		combat_effects.clear_effects()

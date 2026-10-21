@@ -54,7 +54,7 @@ const VEHICLE_DESCRIPTIONS: Dictionary = {
 	"bicycle": "Лёгкий и манёвренный. Для коротких маршрутов и парковых дорожек.", 
 	"scooter": "Быстро через весь район. Компактный транспорт для срочных заказов.", 
 	"car": "Больше скорости на городских дорогах. Space — ручной тормоз.", 
-	"airplane": "Полёт над городом до 60 м. Space — набор высоты, Ctrl — снижение. F — выход после посадки.",
+	"airplane": "Полёт до 60 м. Space — вверх, Ctrl — вниз. ЛКМ — огонь по самолётам в воздухе. F — выход после посадки.",
 }
 
 var _root: Control
@@ -86,6 +86,16 @@ var _interaction_panel: PanelContainer
 var _deliveries: Label
 var _vehicle: Label
 var _keys: Label
+var _air_combat_panel: PanelContainer
+var _air_health: Label
+var _air_health_bar: ProgressBar
+var _air_health_fill: StyleBoxFlat
+var _air_score: Label
+var _air_gun_hint: Label
+var _air_crosshair: AircraftCrosshair
+var _air_hit_feedback: Label
+var _air_hit_until_msec: int = 0
+var _air_hit_destroyed: bool = false
 var _orders_list: VBoxContainer
 var _orders_empty: Label
 var _orders_hint: Label
@@ -214,6 +224,26 @@ var _cosmetic_vehicle_controls: GridContainer
 var _cosmetic_vehicle_preview: VehicleIllustration
 var _cosmetic_preview_vehicle: String = "bicycle"
 var _customization_close: Button
+
+
+class AircraftCrosshair extends Control:
+	var ready_to_fire: bool = false
+	var confirmed_hit: bool = false
+	var confirmed_destroyed: bool = false
+
+	func _draw() -> void:
+		var center: Vector2 = size * 0.5
+		var color: Color = Color("fffaf0") if ready_to_fire else Color("98aaa3")
+		if confirmed_hit:
+			color = Color("e8b653") if confirmed_destroyed else Color("72e4c8")
+		# The black outline stays readable against sky and pale rooftops.
+		for axis: Vector2 in [Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT, Vector2.UP]:
+			draw_line(center + axis * 8.0, center + axis * 17.0, Color(0.08, 0.15, 0.14, 0.8), 4.0, true)
+			draw_line(center + axis * 8.0, center + axis * 17.0, color, 2.0, true)
+		draw_circle(center, 2.0, color)
+		if confirmed_hit:
+			for direction: Vector2 in [Vector2(1.0, 1.0), Vector2(-1.0, 1.0), Vector2(1.0, -1.0), Vector2(-1.0, -1.0)]:
+				draw_line(center + direction * 7.0, center + direction * 12.0, color, 2.0, true)
 
 
 class CosmeticSwatch extends Control:
@@ -1191,6 +1221,7 @@ func _build_game() -> void :
 	_vehicle.add_theme_constant_override("outline_size", 3)
 	_game.add_child(_vehicle)
 	_vehicle.position = Vector2(24, 216)
+	_build_air_combat()
 	_interaction_panel = _card(_game)
 	_interaction_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
 	_interaction_panel.offset_left = -260.0
@@ -1214,6 +1245,95 @@ func _build_game() -> void :
 	_interaction_panel.hide()
 	_ignore_mouse(_game)
 	_position_order_summary()
+
+
+func _build_air_combat() -> void:
+	_air_combat_panel = _card(_game)
+	_air_combat_panel.name = "AirCombatPanel"
+	_air_combat_panel.custom_minimum_size.x = 288.0
+	var box: StyleBoxFlat = _style(CREAM, 14)
+	box.content_margin_left = 14.0
+	box.content_margin_right = 14.0
+	box.content_margin_top = 10.0
+	box.content_margin_bottom = 10.0
+	_air_combat_panel.add_theme_stylebox_override("panel", box)
+	var content: VBoxContainer = _vbox(_air_combat_panel, 4)
+	_air_health = _label("Самолёт · 100 / 100 HP", 14, TEAL)
+	_air_health.name = "AircraftHealth"
+	content.add_child(_air_health)
+	_air_health_bar = ProgressBar.new()
+	_air_health_bar.name = "AircraftHealthBar"
+	_air_health_bar.custom_minimum_size.y = 8.0
+	_air_health_bar.max_value = 100.0
+	_air_health_bar.value = 100.0
+	_air_health_bar.show_percentage = false
+	_air_health_bar.add_theme_stylebox_override("background", _quality_bar_style(PAPER))
+	_air_health_fill = _quality_bar_style(TEAL)
+	_air_health_bar.add_theme_stylebox_override("fill", _air_health_fill)
+	content.add_child(_air_health_bar)
+	_air_score = _label("Сбито: 0 · Потери: 0", 12, MUTED)
+	_air_score.name = "AircraftScore"
+	content.add_child(_air_score)
+	_air_gun_hint = _label("ЛКМ — огонь · держите высоту цели", 12, MUTED)
+	_air_gun_hint.name = "AircraftGunHint"
+	_air_gun_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_air_gun_hint.custom_minimum_size.x = 260.0
+	content.add_child(_air_gun_hint)
+	_air_combat_panel.hide()
+	_air_crosshair = AircraftCrosshair.new()
+	_air_crosshair.name = "AircraftCrosshair"
+	_air_crosshair.size = Vector2(40.0, 40.0)
+	_game.add_child(_air_crosshair)
+	_air_crosshair.hide()
+	_air_hit_feedback = _label("", 15, GOLD)
+	_air_hit_feedback.name = "AircraftHitFeedback"
+	_air_hit_feedback.size = Vector2(160.0, 24.0)
+	_air_hit_feedback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_air_hit_feedback.add_theme_color_override("font_outline_color", INK)
+	_air_hit_feedback.add_theme_constant_override("outline_size", 3)
+	_game.add_child(_air_hit_feedback)
+	_air_hit_feedback.hide()
+
+
+func _update_air_combat(data: Dictionary) -> void:
+	var airplane: bool = String(data.get("active_vehicle", "walking")) == "airplane"
+	var kills: int = maxi(0, int(data.get("air_kills", 0)))
+	var losses: int = maxi(0, int(data.get("air_losses", 0)))
+	_air_combat_panel.visible = airplane or kills > 0 or losses > 0
+	_air_health.visible = airplane
+	_air_health_bar.visible = airplane
+	_air_gun_hint.visible = airplane
+	var health: int = clampi(int(data.get("vehicle_health", 100)), 0, 100)
+	var health_color: Color = TEAL if health > 50 else GOLD.darkened(0.25) if health > 25 else Color("c25446")
+	_air_health.text = "Самолёт · %d / 100 HP" % health
+	_air_health.add_theme_color_override("font_color", health_color)
+	_air_health_bar.value = health
+	_air_health_fill.bg_color = health_color
+	_air_score.text = "Сбито: %d · Потери: %d" % [kills, losses]
+	var can_fire: bool = bool(data.get("can_fire", false))
+	var aim_visible: bool = bool(data.get("aim_visible", false))
+	_air_gun_hint.text = "ЛКМ — огонь · держите высоту цели" if can_fire and aim_visible else "Разверните камеру за самолёт" if can_fire else "Огонь — в воздухе от 2 м"
+	var aiming: bool = airplane and aim_visible and not _has_blocking_overlay()
+	_air_crosshair.visible = aiming
+	var hit_active: bool = Time.get_ticks_msec() < _air_hit_until_msec
+	_air_crosshair.ready_to_fire = can_fire
+	_air_crosshair.confirmed_hit = hit_active
+	_air_crosshair.confirmed_destroyed = _air_hit_destroyed
+	var aim_value: Variant = data.get("aim_screen", Vector2.ZERO)
+	var aim: Vector2 = aim_value if aim_value is Vector2 else Vector2.ZERO
+	_air_crosshair.position = aim - _air_crosshair.size * 0.5
+	_air_crosshair.queue_redraw()
+	_air_hit_feedback.visible = aiming and hit_active
+	_air_hit_feedback.text = "Самолёт сбит!" if _air_hit_destroyed else "Попадание!"
+	var canvas_size: Vector2 = _root.size
+	_air_hit_feedback.position = Vector2(clampf(aim.x - 80.0, 8.0, maxf(8.0, canvas_size.x - 168.0)), clampf(aim.y + 24.0, 8.0, maxf(8.0, canvas_size.y - 32.0)))
+	_position_order_summary()
+
+
+func notify_aircraft_hit(destroyed: bool = false) -> void:
+	_air_hit_destroyed = destroyed
+	_air_hit_until_msec = Time.get_ticks_msec() + (1400 if destroyed else 550)
+	_update_air_combat(_last_data)
 
 
 
@@ -1506,6 +1626,8 @@ func _position_order_summary() -> void :
 	var below: float = _active_order_panel.position.y + _active_order_panel.size.y + 12.0
 	_deliveries.position = Vector2(24.0, below)
 	_vehicle.position = Vector2(24.0, below + 24.0)
+	if is_instance_valid(_air_combat_panel):
+		_air_combat_panel.position = Vector2(24.0, below + 52.0)
 
 
 func _update_order_quality(data: Dictionary) -> void :
@@ -1877,7 +1999,7 @@ func update_garage(profile: Dictionary, definitions: Dictionary) -> void :
 			card_style.border_color = TEAL
 			card_style.set_border_width_all(2)
 		card_panel.add_theme_stylebox_override("panel", card_style)
-	_garage_hint.text = "Покупки сохраняются в профиле. Поставьте транспорт у гаража и нажмите F рядом с ним. Самолёт: Space — вверх, Ctrl — вниз, F — выход после посадки. Перед передачей посылки остановитесь и выйдите."
+	_garage_hint.text = "Покупки сохраняются. Вызовите транспорт и нажмите F рядом. Самолёт: Space ↑, Ctrl ↓, ЛКМ — огонь в воздухе. После сбития владение сохраняется: вызовите самолёт снова бесплатно."
 	if level == 1:
 		_garage_hint.text = "Начните с пеших доставок. Первый велосипед откроется на уровне 2. Скутер — на уровне 4, автомобиль — на уровне 6, самолёт — на уровне 8."
 
@@ -2360,7 +2482,7 @@ func _build_settings() -> void :
 	var controls: VBoxContainer = _vbox(_card(content, PAPER), 12)
 	_settings_pages.append(controls.get_parent())
 	_settings_slider(controls, "Чувствительность мыши", "mouse_sensitivity", 0.2, 3.0, 0.05)
-	var control_hint: Label = _label("WASD — движение · Shift — бег · Space — прыжок\nМышь — камера · E — взаимодействие · F — транспорт\nM — карта · Tab — заказы · Esc — пауза\nСамолёт: Space — вверх · Ctrl — вниз · F — выход после посадки", 14, MUTED)
+	var control_hint: Label = _label("WASD — движение · Shift — бег · Space — прыжок\nМышь — камера · E — взаимодействие · F — транспорт\nM — карта · Tab — заказы · Esc — пауза\nСамолёт: Space ↑ · Ctrl ↓ · F — выход после посадки\nЛКМ — огонь в воздухе. Орудия стреляют прямо по курсу: держите высоту цели. Прицел показывает направление самолёта, мышь вращает только камеру.", 14, MUTED)
 	control_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	controls.add_child(control_hint)
 	var actions: HBoxContainer = HBoxContainer.new()
@@ -2749,6 +2871,10 @@ func show_results(stats: Dictionary, leaderboard: Array = []) -> void :
 	_results_title.text = "Хорошая работа, курьер!" if deliveries > 0 else "Первый шаг сделан."
 	_results_summary.text = "Смена завершена · время %s" % _time(float(stats.get("time_used", 0.0)))
 	_results_numbers.text = "Доставки     %d\nЗаработано   %s ₸\nОпыт             +%d XP\nЛучшая доставка   %s ₸" % [deliveries, _amount(int(stats.get("money", 0))), int(stats.get("xp", 0)), _amount(int(stats.get("best_delivery", 0)))]
+	var air_kills: int = maxi(0, int(stats.get("air_kills", 0)))
+	var air_losses: int = maxi(0, int(stats.get("air_losses", 0)))
+	if air_kills > 0 or air_losses > 0:
+		_results_numbers.text += "\nВоздушный бой   %d сбито · %d потерь" % [air_kills, air_losses]
 	_update_team_results(stats)
 	var entries: Array = leaderboard if not leaderboard.is_empty() else stats.get("leaderboard", [])
 	for child: Node in _leaderboard_rows.get_children():
@@ -2897,6 +3023,7 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 	_update_order_quality(data)
 	_update_team_hud(data)
 	_update_district_event(data)
+	_update_air_combat(data)
 	_deliveries.text = "Доставлено: %d" % int(data.get("deliveries", 0))
 	var active_vehicle: String = String(data.get("active_vehicle", "walking"))
 	var riding: bool = active_vehicle in VEHICLE_TYPES
@@ -2905,7 +3032,7 @@ func update_hud(data: Dictionary, other_players: Array = []) -> void :
 		var altitude: float = maxf(0.0, float(data.get("vehicle_altitude", 0.0)))
 		var grounded: bool = bool(data.get("vehicle_grounded", altitude <= 0.5))
 		_vehicle.text += " · высота %d м · %s" % [roundi(altitude), "на земле" if grounded else "в полёте"]
-		_keys.text = "W/S тяга / тормоз · A/D поворот · Space ↑ · Ctrl ↓ · %s · Tab заказы · M карта · Esc пауза" % ("F выйти" if grounded else "F после посадки")
+		_keys.text = "W/S тяга · A/D курс · Space ↑ · Ctrl ↓ · ЛКМ огонь · %s · Tab заказы · M карта · Esc" % ("F выйти" if grounded else "F посадка")
 	elif active_vehicle == "car":
 		_keys.text = "W/S газ / тормоз · A/D поворот · Space ручной тормоз · F выйти · Tab заказы · M карта · Esc пауза"
 	elif riding:

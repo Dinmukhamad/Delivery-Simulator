@@ -1,6 +1,8 @@
 # Delivery Simulator
 
-Editable Godot demo **0.15.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
+Editable Godot demo **0.16.0**. Open `GodotDemo/project.godot` with Godot 4.6.3.
+
+**Air combat:** each courier can buy their own airplane and fight LAN friends. Hold **left mouse** above 2 metres to fire forward along the aircraft heading. Align altitude with the target: four hits remove its 100 HP. Host validates hits and buildings block shots. The shot-down courier returns safely to the Garage, keeps career progress and can call the owned plane again for free. Tracers, damage smoke, a brief falling wreck, HP and session kills/losses show the result. [Controls, full code and testing](docs/AIR_COMBAT.md).
 
 **Tenge and flight:** all money displays use Kazakhstani tenge (₸), preserving existing amounts and purchases. The fourth Garage vehicle is **Air Courier**, a rounded mini airplane costing **30,000 ₸** at **level 8**. WASD throttle/turn, Space climb, Ctrl descend, neutral hover. Land and stop before F to exit. Flight is limited to 60m altitude with building collisions and LAN authority. DELIVERYMASTER + ALLVEHICLES also grants access. [Full source, setup and testing](docs/FLIGHT_TENGE.md).
 
@@ -21,13 +23,13 @@ The city is **516 × 516 metres**, with **104 buildings, 18 pickup points and 51
 
 **Lunch Rush** starts 45 seconds into a shift: three minutes of extra cafe-to-office orders in the business district. Timely delivery pays 50% extra Money. LAN **Team Shift** adds shared goals, contribution bonuses and explicit parcel handoffs through Tab.
 
-[Windows artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/39424298323/artifacts/12265354300) · [macOS artifact](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/39424298323/artifacts/12266066581)
+Windows/macOS 0.16.0 download links will be added after the build completes. Previous validated release: [0.15.0 build](https://github.com/Dinmukhamad/Delivery-Simulator/actions/runs/39424298323).
 
 Unpack the download, then unpack the game ZIP inside it. Run the EXE on Windows or the app on macOS.
 
-CI passed **11720 checks** across source and both exact target packs, seven actual two-process ENet scenarios, isolated career saves and **27 engine renders**.
+The build workflow checks source, both exact exported target packs, real two-process ENet sessions, isolated career saves and actual engine renders. Current build evidence: [BUILD_REPORT.md](docs/BUILD_REPORT.md).
 
-LAN: Host Game → friends Join Game using the Host IPv4 → Ready → Start. Same version **0.15.0**, same local network, UDP port 7777. Career profiles remain local.
+LAN: Host Game → friends Join Game using the Host IPv4 → Ready → Start. Same version **0.16.0**, same local network, UDP port 7777. Career profiles remain local.
 
 [Cheat codes: source, setup and testing](docs/CHEAT_CODES.md) · [Customization](docs/CUSTOMIZATION.md) · [District events](docs/DISTRICT_EVENTS.md) · [City](docs/CITY_LAYOUT.md) · [Team Shift](docs/TEAM_SHIFT.md) · [Build evidence](docs/BUILD_REPORT.md)
 

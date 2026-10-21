@@ -14,6 +14,7 @@ const TeamShiftRules = preload("res://scripts/team_shift_rules.gd")
 const CityLayout = preload("res://scripts/city_layout.gd")
 const CityOrderRules = preload("res://scripts/city_order_rules.gd")
 const DistrictEventRules = preload("res://scripts/district_event_rules.gd")
+const AircraftCombatRules = preload("res://scripts/aircraft_combat_rules.gd")
 const AVAILABLE_ORDER_COUNT: = 6
 const EXPRESS_REQUIRED_LEVEL: = 3
 const MAX_PROFILE_VALUE: = 1000000000
@@ -65,6 +66,8 @@ var _team_awarded: Dictionary = {}
 var _handoff_offers: Dictionary = {}
 var _next_offer_id: int = 1
 var _cheat_budgets: Dictionary = {}
+var _aircraft_last_fire_msec: Dictionary = {}
+var _next_aircraft_shot_id: int = 1
 
 
 func _ready() -> void :
@@ -92,6 +95,8 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 	_handoff_offers.clear()
 	_next_offer_id = 1
 	_cheat_budgets.clear()
+	_aircraft_last_fire_msec.clear()
+	_next_aircraft_shot_id = 1
 	session_id = new_session_id
 	phase = "playing"
 	records.clear()
@@ -130,6 +135,7 @@ func start_session(config: Dictionary, roster: Array, world: Node3D, balance: Di
 			"active_order": {}, "shift_stats": _empty_shift_stats(), "connected": true,
 			"position": position, "yaw": PI, "velocity": Vector3.ZERO,
 			"grounded": true, "carrying": false,
+			"air_kills": 0, "air_losses": 0, "recovery_position": position,
 			"vehicle": {}, "vehicle_speed": 0.0, "vehicle_generation": 0,
 			"move_credit": INITIAL_MOVE_CREDIT, "pose_tick_msec": _started_at_msec,
 			"flight_ascent_credit": FLIGHT_INITIAL_VERTICAL_CREDIT, "flight_descent_credit": FLIGHT_INITIAL_VERTICAL_CREDIT,
@@ -178,6 +184,8 @@ func handle_request(peer_id: int, action: String, payload: Dictionary) -> void :
 			_spawn_vehicle(peer_id, payload)
 		"vehicle_toggle":
 			_toggle_vehicle(peer_id, payload)
+		"aircraft_fire":
+			_aircraft_fire(peer_id, payload)
 		"offer_handoff":
 			_offer_handoff(peer_id, payload)
 		"accept_handoff":
@@ -196,6 +204,7 @@ func remove_player(peer_id: int) -> void :
 		return
 	_clear_handoffs_for(peer_id)
 	_cheat_budgets.erase(peer_id)
+	_aircraft_last_fire_msec.erase(peer_id)
 	record["connected"] = false
 	record["active_order"] = {}
 	record["carrying"] = false
@@ -258,6 +267,7 @@ func snapshot_for(peer_id: int) -> Dictionary:
 		"players": _public_players(), "vehicles": _public_vehicles(), "leaderboard": _leaderboard(),
 		"team": _team_snapshot(peer_id), "handoffs": _handoff_snapshot(peer_id, now),
 		"district_event": _district_event_snapshot(now),
+		"air_combat": {"kills": int(record.get("air_kills", 0)), "losses": int(record.get("air_losses", 0))},
 		"order_event": DistrictEventRules.order_view(active_order, _elapsed_seconds(now), phase == "playing", _district_event_config)
 	}
 
@@ -907,11 +917,15 @@ func _new_vehicle(peer_id: int, vehicle_id: String, position: Vector3, yaw: floa
 	var generation: int = int(records[peer_id].get("vehicle_generation", 0)) + 1
 	records[peer_id]["vehicle_generation"] = generation
 	_reset_impact_history(records[peer_id])
-	return {
+	var vehicle: Dictionary = {
 		"owner_id": peer_id, "type": vehicle_id, "generation": generation, "position": position, "yaw": yaw, "occupied": false,
 		"velocity": Vector3.ZERO, "grounded": true, "carrying": false,
 		"appearance": CosmeticCatalog.sanitize_profile(records[peer_id]["profile"])["appearance"]
 	}
+	if vehicle_id == "airplane":
+		vehicle["health"] = AircraftCombatRules.MAX_HEALTH
+		vehicle["max_health"] = AircraftCombatRules.MAX_HEALTH
+	return vehicle
 
 
 func _spawn_record_vehicle(peer_id: int, vehicle_id: String, notify_failure: bool = true) -> bool:
@@ -1002,6 +1016,136 @@ func _emit_vehicle_state(peer_id: int) -> void :
 		"type": "vehicle_state", "vehicle": record["vehicle"].duplicate(true),
 		"position": record["position"], "active_vehicle": _active_vehicle_type(record)
 	})
+
+
+func _aircraft_fire(peer_id: int, payload: Dictionary) -> void:
+	# The transport supplies peer_id. The only client input is the lifecycle
+	# generation of its own aircraft; targets, positions and damage are forbidden.
+	if payload.size() != 1 or not payload.get("generation", null) is int:
+		return
+	var record: Dictionary = records[peer_id]
+	var vehicle: Dictionary = record.get("vehicle", {})
+	if not AircraftCombatRules.eligible(vehicle) or not _owns_vehicle(record, "airplane") or int(payload["generation"]) != int(vehicle.get("generation", -1)):
+		return
+	if not is_instance_valid(_world) or not _world.is_inside_tree():
+		return
+	var now: int = Time.get_ticks_msec()
+	if now - int(_aircraft_last_fire_msec.get(peer_id, -AircraftCombatRules.COOLDOWN_MSEC)) < AircraftCombatRules.COOLDOWN_MSEC:
+		return
+	_aircraft_last_fire_msec[peer_id] = now
+	var position: Vector3 = vehicle["position"]
+	var yaw: float = float(vehicle.get("yaw", 0.0))
+	var origin: Vector3 = AircraftCombatRules.muzzle(position, yaw)
+	var direction: Vector3 = AircraftCombatRules.shot_direction(yaw)
+	if not _finite_vector(origin) or direction.is_zero_approx():
+		return
+	var center: Vector3 = position + Vector3.UP * AircraftCombatRules.MUZZLE_HEIGHT
+	var nearest_distance: float = AircraftCombatRules.RANGE
+	var obstruction: Dictionary = _aircraft_world_ray(origin, origin + direction * nearest_distance)
+	# A clipped nose must not allow firing from the far side of a wall.
+	var muzzle_obstruction: Dictionary = _aircraft_world_ray(center, origin)
+	if not muzzle_obstruction.is_empty():
+		origin = muzzle_obstruction["position"]
+		nearest_distance = 0.0
+	elif not obstruction.is_empty():
+		nearest_distance = origin.distance_to(obstruction["position"])
+	var hit_id: int = 0
+	for candidate_value: Variant in records:
+		var candidate_id: int = int(candidate_value)
+		if candidate_id == peer_id:
+			continue
+		var candidate: Dictionary = records[candidate_id]
+		var target_vehicle: Dictionary = candidate.get("vehicle", {})
+		if not bool(candidate.get("connected", false)) or not AircraftCombatRules.eligible(target_vehicle):
+			continue
+		var distance: float = AircraftCombatRules.ray_hit_distance(origin, direction, target_vehicle["position"], float(target_vehicle.get("yaw", 0.0)), _vehicle_definition("airplane"))
+		# Walls win ties. Of overlapping aircraft, select the nearest target once.
+		if distance < nearest_distance - 0.0001 or (hit_id > 0 and is_equal_approx(distance, nearest_distance) and candidate_id < hit_id):
+			nearest_distance = distance
+			hit_id = candidate_id
+	var health: int = 0
+	var destroyed: bool = false
+	var target_position: Vector3 = Vector3.ZERO
+	var target_generation: int = 0
+	if hit_id > 0:
+		var target: Dictionary = records[hit_id]
+		var target_vehicle: Dictionary = target["vehicle"]
+		health = maxi(0, int(target_vehicle["health"]) - AircraftCombatRules.DAMAGE)
+		target_vehicle["health"] = health
+		destroyed = health == 0
+		target_position = target_vehicle["position"]
+		target_generation = int(target_vehicle.get("generation", 0))
+	var shot: Dictionary = {
+		"type": "aircraft_shot", "session_id": session_id, "shot_id": _next_aircraft_shot_id,
+		"shooter_id": peer_id, "shooter_generation": int(vehicle.get("generation", 0)),
+		"from": origin, "to": origin + direction * nearest_distance,
+		"hit_id": hit_id, "health": health, "destroyed": destroyed,
+		"target_position": target_position, "target_generation": target_generation
+	}
+	_next_aircraft_shot_id += 1
+	for recipient_value: Variant in records:
+		var recipient: int = int(recipient_value)
+		if bool(records[recipient].get("connected", false)):
+			event_ready.emit(recipient, shot.duplicate(true))
+	if destroyed:
+		record["air_kills"] = int(record.get("air_kills", 0)) + 1
+		_recover_aircraft_pilot(hit_id, peer_id)
+	if hit_id > 0:
+		_mark_changed()
+
+
+func _aircraft_world_ray(from: Vector3, to: Vector3) -> Dictionary:
+	if from.distance_squared_to(to) < 0.000001:
+		return {}
+	var query: = PhysicsRayQueryParameters3D.create(from, to, 1)
+	query.hit_from_inside = true
+	return _world.get_world_3d().direct_space_state.intersect_ray(query)
+
+
+func _recover_aircraft_pilot(peer_id: int, attacker_id: int) -> void:
+	var record: Dictionary = records[peer_id]
+	var old_generation: int = int(record.get("vehicle", {}).get("generation", 0))
+	_clear_handoffs_for(peer_id)
+	record["air_losses"] = int(record.get("air_losses", 0)) + 1
+	record["vehicle_generation"] = maxi(int(record.get("vehicle_generation", 0)), old_generation) + 1
+	record["vehicle"] = {}
+	record["position"] = _aircraft_recovery_position(peer_id)
+	record["velocity"] = Vector3.ZERO
+	record["vehicle_speed"] = 0.0
+	record["grounded"] = true
+	record["yaw"] = PI
+	record["move_credit"] = INITIAL_MOVE_CREDIT
+	record["pose_tick_msec"] = Time.get_ticks_msec()
+	record["pose_emit_msec"] = int(record["pose_tick_msec"]) - POSE_BROADCAST_MSEC
+	record["carrying"] = not record["active_order"].is_empty() and record["active_order"].get("state", "") == "PickedUp"
+	_reset_flight_credit(record)
+	_reset_impact_history(record)
+	# Career/profile and any accepted parcel remain unchanged. The owned plane
+	# can be spawned again free of charge at the garage with fresh health.
+	event_ready.emit(peer_id, {
+		"type": "aircraft_recovery", "session_id": session_id, "attacker_id": attacker_id,
+		"position": record["position"], "generation": int(record["vehicle_generation"]),
+		"message": "Самолёт сбит! Вы у гаража. Ваш самолёт и прогресс сохранены: подайте его снова бесплатно."
+	})
+	_emit_vehicle_state(peer_id)
+	pose_ready.emit(peer_id, {
+		"position": record["position"], "yaw": record["yaw"], "velocity": Vector3.ZERO,
+		"grounded": true, "carrying": record["carrying"], "active_vehicle": "walking", "vehicle": {},
+		"vehicle_generation": int(record["vehicle_generation"])
+	})
+
+
+func _aircraft_recovery_position(peer_id: int) -> Vector3:
+	# The garage forecourt is protected from gunfire. Check the actual street
+	# collider and standing capsule rather than projecting through a roof.
+	var candidates: Array[Vector3] = [GARAGE_POSITION]
+	for offset: Vector3 in [Vector3(2.0, 0.0, 0.0), Vector3(-2.0, 0.0, 0.0), Vector3(0.0, 0.0, 2.0), Vector3(0.0, 0.0, -2.0), Vector3(3.0, 0.0, 2.0), Vector3(-3.0, 0.0, -2.0)]:
+		candidates.append(GARAGE_POSITION + offset)
+	for candidate: Vector3 in candidates:
+		var ground: Variant = VehiclePlacement.grounded_position(_world, candidate)
+		if ground is Vector3 and VehiclePlacement.position_is_free(_world, ground, PI, false):
+			return ground
+	return records[peer_id].get("recovery_position", Vector3(-23.0, 0.15, 4.0))
 
 
 func _accept_pose(peer_id: int, payload: Dictionary) -> void :
@@ -1314,6 +1458,7 @@ func _public_players() -> Array[Dictionary]:
 			"id": int(peer_id), "name": record["name"], "level": int(profile["level"]), "rank": str(profile["rank"]),
 			"position": record["position"], "yaw": float(record["yaw"]), "carrying": bool(record["carrying"]), "connected": bool(record["connected"]),
 			"active_vehicle": _active_vehicle_type(record),
+			"air_kills": int(record.get("air_kills", 0)), "air_losses": int(record.get("air_losses", 0)),
 			"appearance": CosmeticCatalog.sanitize_profile(profile)["appearance"],
 			"has_order": not record["active_order"].is_empty(),
 			"order_state": str(record["active_order"].get("state", ""))
@@ -1342,7 +1487,8 @@ func _leaderboard() -> Array[Dictionary]:
 			"id": int(peer_id), "name": record["name"], "money": int(stats["money"]), "xp": int(stats["xp"]),
 			"deliveries": int(stats["deliveries"]), "best_delivery": int(stats["best_delivery"]), "connected": bool(record["connected"]),
 			"team_bonus_money": int(stats.get("team_bonus_money", 0)), "team_bonus_xp": int(stats.get("team_bonus_xp", 0)),
-			"event_deliveries": int(stats.get("event_deliveries", 0)), "event_bonus_money": int(stats.get("event_bonus_money", 0))
+			"event_deliveries": int(stats.get("event_deliveries", 0)), "event_bonus_money": int(stats.get("event_bonus_money", 0)),
+			"air_kills": int(record.get("air_kills", 0)), "air_losses": int(record.get("air_losses", 0))
 		})
 	rows.sort_custom( func(a: Dictionary, b: Dictionary) -> bool:
 		if a["money"] != b["money"]:
