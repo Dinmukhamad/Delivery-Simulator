@@ -51,6 +51,9 @@ Host выбирает ближайший самолёт на луче с учё�
 | [combat_effects.gd](../GodotDemo/scripts/combat_effects.gd) | Ограниченные по количеству трассеры, вспышки, попадания и короткий эффект сбития. |
 | [generate_combat_audio.py](../tools/generate_combat_audio.py) | Воспроизводимая генерация оригинальных CC0 звуков. |
 | [aircraft_fire.wav](../GodotDemo/assets/audio/aircraft_fire.wav), [aircraft_hit.wav](../GodotDemo/assets/audio/aircraft_hit.wav) | Выстрел и попадание; лицензия, размеры и SHA256 находятся в аудиоманифесте. |
+| [aircraft_combat.gd](../GodotDemo/tests/aircraft_combat.gd) | Проверки Host, попаданий, восстановления, ввода, повторных событий, звуков и ограниченного пула эффектов. |
+| [lan_air_combat_peer.gd](../GodotDemo/tests/lan_air_combat_peer.gd) | Настоящие Host/Client, независимые покупки, взаимные сбития и сохранения в отдельных временных папках. |
+| [air_combat_visual.gd](../GodotDemo/tests/air_combat_visual.gd) | Настоящие кадры игры, прочность, прицел и границы интерфейса при 1280×720 и 960×540. |
 | [AIR_COMBAT.md](AIR_COMBAT.md) | Управление, устройство системы, проверка и ошибки. |
 
 Ссылки на GDScript открывают полный код файлов. Автоматические проверки и их фактические результаты для конкретной сборки описаны в [BUILD_REPORT.md](BUILD_REPORT.md).
