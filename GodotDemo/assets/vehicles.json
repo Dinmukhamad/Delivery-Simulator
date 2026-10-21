@@ -47,5 +47,24 @@
     "collision_length": 4.0,
     "camera_distance": 7.5,
     "camera_height": 1.7
+  },
+  "airplane": {
+    "id": "airplane",
+    "name": "Самолёт Air Courier",
+    "price": 30000,
+    "required_level": 8,
+    "max_speed": 30.0,
+    "reverse_speed": 4.0,
+    "acceleration": 9.0,
+    "braking": 14.0,
+    "steer_rate": 1.2,
+    "ascend_rate": 8.0,
+    "descend_rate": 6.0,
+    "max_altitude": 60.0,
+    "collision_width": 6.0,
+    "collision_height": 2.45,
+    "collision_length": 5.3,
+    "camera_distance": 10.0,
+    "camera_height": 2.3
   }
 }

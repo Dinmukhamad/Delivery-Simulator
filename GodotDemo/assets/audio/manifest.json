@@ -162,7 +162,61 @@
       "max_adjacent_step": 0.0804773,
       "size_bytes": 2540204,
       "sha256": "48225671de5c596dfa5d7e47cc2e2b9c47540f2f24f27b39b7b43d216be2e95c"
+    },
+    {
+      "file": "airplane_engine.wav",
+      "generator": "tools/generate_aircraft_audio.py",
+      "license": "CC0-1.0",
+      "sample_rate": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "frames": 44100,
+      "duration_seconds": 2,
+      "loop": true,
+      "peak": 0.34326171875,
+      "rms": 0.16170894825868024,
+      "max_channel_dc": 0.0,
+      "seam_delta": 0.013092041015625,
+      "max_adjacent_step": 0.013092041015625,
+      "size_bytes": 88244,
+      "sha256": "74ad0bf6e0de59846d6fa8a365032d286a0ca1dcb86baf5721b080859d67d451"
+    },
+    {
+      "file": "aircraft_fire.wav",
+      "generator": "tools/generate_combat_audio.py",
+      "license": "CC0-1.0",
+      "sample_rate": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "frames": 2866,
+      "duration_seconds": 0.12997732426303854,
+      "loop": false,
+      "peak": 0.405364990234375,
+      "rms": 0.09368714981375861,
+      "max_channel_dc": 0.001431578950955164,
+      "seam_delta": 0.0,
+      "max_adjacent_step": 0.299957275390625,
+      "size_bytes": 5776,
+      "sha256": "e5d328c7d5a821d01b13627d1566ba13f246d25a2e78cbedf07e74ec43cb2a1e"
+    },
+    {
+      "file": "aircraft_hit.wav",
+      "generator": "tools/generate_combat_audio.py",
+      "license": "CC0-1.0",
+      "sample_rate": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "frames": 7938,
+      "duration_seconds": 0.36,
+      "loop": false,
+      "peak": 0.43438720703125,
+      "rms": 0.0939441941348685,
+      "max_channel_dc": 0.0007085821796166383,
+      "seam_delta": 0.0,
+      "max_adjacent_step": 0.4490966796875,
+      "size_bytes": 15920,
+      "sha256": "956deee23c0958e113bdc293451c8c1122c22e780fb8438ccdda6418d717428d"
     }
   ],
-  "total_wav_bytes": 2920080
+  "total_wav_bytes": 3030020
 }

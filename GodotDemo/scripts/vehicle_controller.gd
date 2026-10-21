@@ -6,9 +6,11 @@ extends CharacterBody3D
 signal impact(normal_speed: float)
 
 const RoundedGeometry = preload("res://scripts/rounded_geometry.gd")
+const CosmeticCatalog = preload("res://scripts/cosmetic_catalog.gd")
 const VehicleCatalog = preload("res://scripts/vehicle_catalog.gd")
 const GRAVITY: = 24.0
-const WORLD_BOUND: = 84.0
+const CityLayout = preload("res://scripts/city_layout.gd")
+const WORLD_BOUND: = CityLayout.HALF_SIZE - 2.5
 const WHEEL_RADIUS: = 0.43
 const IDENTITY_COLORS: = [
 	[Color("#246cdb"), Color("#164293"), Color("#428ae4")], 
@@ -24,6 +26,7 @@ var controls_enabled: = false
 var speed: = 0.0
 var remote_mode: = false
 var is_carrying: = false
+var combat_health: int = 100
 
 var _remote: = false
 var _visual: Node3D
@@ -39,6 +42,18 @@ var _feet: Array[MeshInstance3D] = []
 var _identity_name: = ""
 var _identity_index: = 0
 var _identity_materials: Array[StandardMaterial3D] = []
+
+var _appearance: Dictionary = {"outfit": "classic_blue", "backpack": "classic", "vehicle_paint": "factory"}
+var _appearance_explicit: = false
+var _appearance_key: = ""
+var _outfit_materials: Dictionary = {}
+var _backpack_materials: Array[StandardMaterial3D] = []
+var _backpack_variants: Dictionary = {}
+var _backpack_straps: Array[Node3D] = []
+
+var _paint_materials: Array[StandardMaterial3D] = []
+var _factory_paint_colors: Array[Color] = []
+var _paint_key: = ""
 var _identity_label: Label3D
 var _target_position: = Vector3.ZERO
 var _target_yaw: = PI
@@ -56,6 +71,12 @@ var _collision_shape: BoxShape3D
 var _remote_steering_initialized: = false
 var _brake_lights: Array[StandardMaterial3D] = []
 var _last_visual_speed: = 0.0
+var _propeller: Node3D
+var _propeller_speed: = 0.0
+var _flight_lifted: = false
+var _damage_smoke: Node3D
+var _damage_smoke_puffs: Array[MeshInstance3D] = []
+var _damage_smoke_phase: float = 0.0
 
 
 func configure(vehicle_definition: Dictionary, vehicle_owner_peer_id: int = 0, remote: bool = false) -> void :
@@ -92,10 +113,14 @@ func _ready() -> void :
 	match str(definition.get("id", "bicycle")):
 		"scooter": _build_scooter()
 		"car": _build_car()
+		"airplane": _build_airplane()
 		_: _build_bicycle()
 	_build_identity_label()
 	set_occupied(occupied)
 	set_network_identity(_identity_name, _identity_index)
+	if _appearance_explicit and not _outfit_materials.is_empty():
+		_apply_courier_appearance()
+	_apply_vehicle_paint()
 
 
 func _physics_process(delta: float) -> void :
@@ -103,7 +128,10 @@ func _physics_process(delta: float) -> void :
 		global_position = global_position.lerp(_target_position, 1.0 - exp(-18.0 * delta))
 		var previous_yaw: = rotation.y
 		rotation.y = lerp_angle(rotation.y, _target_yaw, 1.0 - exp(-14.0 * delta))
-		if _remote_steering_initialized and delta > 0.0 and absf(speed) > 0.3:
+		if is_airplane() and _remote_steering_initialized and delta > 0.0:
+			var turn_direction: = -1.0 if speed < -0.3 else 1.0
+			_steering = clampf(-angle_difference(previous_yaw, rotation.y) / (delta * _value("steer_rate", 1.2) * turn_direction), -1.0, 1.0)
+		elif _remote_steering_initialized and delta > 0.0 and absf(speed) > 0.3:
 			_steering = clampf( - angle_difference(previous_yaw, rotation.y) / (delta * _value("steer_rate", 2.2) * signf(speed)), -1.0, 1.0)
 		else:
 			_steering = 0.0
@@ -133,7 +161,11 @@ func _physics_process(delta: float) -> void :
 			speed = move_toward(speed, 0.0, 2.4 * delta)
 		_steering = Input.get_action_strength("move_right") - Input.get_action_strength("move_left")
 		var moving_factor: = clampf(absf(speed) / 3.0, 0.0, 1.0)
-		var next_yaw: = rotation.y - _steering * _value("steer_rate", 2.2) * moving_factor * signf(speed) * delta
+		var turn_direction: = signf(speed)
+		if is_airplane() and not is_on_floor():
+			moving_factor = maxf(0.65, moving_factor)
+			turn_direction = -1.0 if speed < -0.3 else 1.0
+		var next_yaw: = rotation.y - _steering * _value("steer_rate", 2.2) * moving_factor * turn_direction * delta
 		if _rotation_is_free(next_yaw):
 			rotation.y = next_yaw
 	else:
@@ -141,7 +173,9 @@ func _physics_process(delta: float) -> void :
 	var forward: = - global_basis.z
 	velocity.x = forward.x * speed
 	velocity.z = forward.z * speed
-	if not is_on_floor():
+	if is_airplane() and occupied:
+		_update_flight_velocity(delta)
+	elif not is_on_floor():
 		velocity.y -= GRAVITY * delta
 	elif velocity.y < 0.0:
 		velocity.y = -0.1
@@ -149,27 +183,84 @@ func _physics_process(delta: float) -> void :
 
 
 	var incoming_horizontal_velocity: = Vector3(velocity.x, 0.0, velocity.z)
+	var incoming_velocity: = velocity
 	move_and_slide()
 	if occupied and controls_enabled:
 		var strongest_impact: = 0.0
 		for index in range(get_slide_collision_count()):
 			var normal: = get_slide_collision(index).get_normal()
-			if absf(normal.y) < 0.6:
+			if is_airplane():
+				strongest_impact = maxf(strongest_impact, -incoming_velocity.dot(normal))
+			elif absf(normal.y) < 0.6:
 				strongest_impact = maxf(strongest_impact, - incoming_horizontal_velocity.dot(normal))
 		if strongest_impact > 0.0:
 			impact.emit(strongest_impact)
 
 	if is_on_wall():
 		speed = Vector2(velocity.x, velocity.z).dot(Vector2(forward.x, forward.z))
-	if absf(global_position.x) > WORLD_BOUND or absf(global_position.z) > WORLD_BOUND:
-		global_position.x = clampf(global_position.x, - WORLD_BOUND, WORLD_BOUND)
-		global_position.z = clampf(global_position.z, - WORLD_BOUND, WORLD_BOUND)
+	var horizontal_limits: = _horizontal_limits()
+	if absf(global_position.x) > horizontal_limits.x or absf(global_position.z) > horizontal_limits.y:
+		global_position.x = clampf(global_position.x, -horizontal_limits.x, horizontal_limits.x)
+		global_position.z = clampf(global_position.z, -horizontal_limits.y, horizontal_limits.y)
 		speed = 0.0
 		velocity.x = 0.0
 		velocity.z = 0.0
 	if global_position.y < -10.0:
 		reset_at(_spawn)
 	_animate(delta)
+
+
+func is_airplane() -> bool:
+	return str(definition.get("id", "")) == "airplane"
+
+
+func set_combat_health(value: int) -> void:
+	# Only authoritative snapshots change health; these puffs are decorative.
+	combat_health = clampi(value, 0, 100)
+	if is_instance_valid(_damage_smoke):
+		_damage_smoke.visible = combat_health > 0 and combat_health <= 50
+
+
+# Roof support is not a safe exit: delivery interaction and the courier still
+# use street level placement. Remote vehicles use the existing grounded pose.
+func can_disembark() -> bool:
+	if not is_airplane():
+		return true
+	var grounded: = _remote_grounded if _remote else is_on_floor()
+	var vertical_speed: = _received_velocity.y if _remote else velocity.y
+	return grounded and global_position.y <= 0.65 and absf(vertical_speed) <= 0.75
+
+
+func _update_flight_velocity(delta: float) -> void:
+	var lift: = 0.0
+	if controls_enabled:
+		lift = Input.get_action_strength("jump") - Input.get_action_strength("flight_descend")
+	# Assisted lift allows a small courier plane to leave a narrow street even
+	# at a standstill. Releasing both controls holds height until landing.
+	if lift > 0.0:
+		_flight_lifted = true
+	elif is_on_floor():
+		_flight_lifted = false
+	if lift == 0.0 and not _flight_lifted and not is_on_floor():
+		velocity.y -= GRAVITY * delta
+	else:
+		velocity.y = lift * _value("ascend_rate", 8.0) if lift > 0.0 else lift * _value("descend_rate", 6.0)
+	if is_on_floor() and velocity.y <= 0.0:
+		velocity.y = -0.1
+	var ceiling: = minf(60.0, _value("max_altitude", 60.0))
+	if delta > 0.0:
+		velocity.y = minf(velocity.y, maxf(0.0, ceiling - global_position.y) / delta)
+
+
+func _horizontal_limits() -> Vector2:
+	if not is_airplane():
+		return Vector2(WORLD_BOUND, WORLD_BOUND)
+	# Keep the entire yaw-only collision footprint inside the authored city.
+	var half_width: = _value("collision_width", 6.0) * 0.5
+	var half_length: = _value("collision_length", 5.3) * 0.5
+	var c: = absf(cos(rotation.y))
+	var s: = absf(sin(rotation.y))
+	return Vector2(minf(WORLD_BOUND, CityLayout.HALF_SIZE - half_width * c - half_length * s), minf(WORLD_BOUND, CityLayout.HALF_SIZE - half_width * s - half_length * c))
 
 
 func set_occupied(value: bool) -> void :
@@ -181,7 +272,10 @@ func set_occupied(value: bool) -> void :
 	if is_instance_valid(_parcel):
 		_parcel.visible = is_carrying and occupied
 	if is_instance_valid(_identity_label):
-		_identity_label.position.y = (2.3 if is_carrying and occupied else 1.9) if str(definition.get("id", "")) == "car" else (2.48 if value else 1.65)
+		if is_airplane():
+			_identity_label.position.y = 3.1 if value else 2.6
+		else:
+			_identity_label.position.y = (2.3 if is_carrying and occupied else 1.9) if str(definition.get("id", "")) == "car" else (2.48 if value else 1.65)
 
 
 func set_controls_enabled(enabled: bool) -> void :
@@ -195,11 +289,72 @@ func set_controls_enabled(enabled: bool) -> void :
 func set_network_identity(display_name: String, color_index: int = 0) -> void :
 	_identity_name = display_name
 	_identity_index = posmod(color_index, IDENTITY_COLORS.size())
-	for index in range(_identity_materials.size()):
-		_identity_materials[index].albedo_color = IDENTITY_COLORS[_identity_index][index]
+	if not _appearance_explicit:
+		for index in range(_identity_materials.size()):
+			_identity_materials[index].albedo_color = IDENTITY_COLORS[_identity_index][index]
 	if is_instance_valid(_identity_label):
 		_identity_label.text = display_name
 		_identity_label.visible = not display_name.is_empty()
+
+
+
+# Appearance contains catalog IDs only; snapshots never provide colors or materials.
+# It can be applied before _ready, and repeated snapshots preserve all mesh resources.
+func apply_appearance(raw: Dictionary) -> void:
+	var normalized: Dictionary = CosmeticCatalog.normalize_appearance(raw)
+	var key: String = "%s:%s:%s" % [normalized["outfit"], normalized["backpack"], normalized["vehicle_paint"]]
+	_appearance = normalized
+	_appearance_explicit = true
+	if key == _appearance_key:
+		return
+	_appearance_key = key
+	if not _outfit_materials.is_empty():
+		_apply_courier_appearance()
+	_apply_vehicle_paint()
+
+
+func get_appearance() -> Dictionary:
+	return _appearance.duplicate(true)
+
+
+func _apply_courier_appearance() -> void:
+	var palette: Dictionary = CosmeticCatalog.outfit_palette(str(_appearance["outfit"]))
+	for channel: String in _outfit_materials:
+		var material: StandardMaterial3D = _outfit_materials[channel]
+		material.albedo_color = Color(str(palette[channel]))
+	var bag_palette: Dictionary = CosmeticCatalog.backpack_palette(str(_appearance["backpack"]))
+	_backpack_materials[0].albedo_color = Color(str(bag_palette["color"]))
+	_backpack_materials[1].albedo_color = Color(str(bag_palette["trim"]))
+	var style: String = str(bag_palette["style"])
+	for variant_id: String in _backpack_variants:
+		var variant: Node3D = _backpack_variants[variant_id]
+		variant.visible = variant_id == style
+	for strap: Node3D in _backpack_straps:
+		strap.visible = style != "messenger"
+
+
+func apply_paint(paint_id: String) -> void:
+	var changed: Dictionary = _appearance.duplicate(true)
+	changed["vehicle_paint"] = paint_id
+	apply_appearance(changed)
+
+
+func _apply_vehicle_paint() -> void:
+	if _paint_materials.is_empty():
+		return
+	var paint_id: String = str(_appearance["vehicle_paint"])
+	if paint_id == _paint_key:
+		return
+	var palette: Dictionary = CosmeticCatalog.paint_palette(paint_id)
+	for index in range(_paint_materials.size()):
+		_paint_materials[index].albedo_color = _factory_paint_colors[index] if paint_id == "factory" else Color(str(palette["paint" if index == 0 else "trim"]))
+	_paint_key = paint_id
+
+
+func _register_paint_materials(body: StandardMaterial3D, trim: StandardMaterial3D) -> void:
+	_paint_materials = [body, trim]
+	_factory_paint_colors = [body.albedo_color, trim.albedo_color]
+	_paint_key = ""
 
 
 func set_carrying(carrying: bool) -> void :
@@ -257,6 +412,7 @@ func correct_network_position(position: Vector3, yaw: float = NAN) -> void :
 	_target_position = position
 	_target_yaw = rotation.y
 	_received_velocity = Vector3.ZERO
+	_flight_lifted = is_airplane() and position.y > 0.65
 	_pose_initialized = true
 	reset_physics_interpolation()
 
@@ -265,7 +421,10 @@ func _value(key: String, fallback: float) -> float:
 	var supplied: Variant = definition.get(key, fallback)
 	if not (supplied is float or supplied is int) or not is_finite(float(supplied)):
 		return fallback
-	return maxf(0.01, float(supplied))
+	var value: = maxf(0.01, float(supplied))
+	if is_airplane() and VehicleCatalog.AIRPLANE_LIMITS.has(key):
+		return minf(value, float(VehicleCatalog.AIRPLANE_LIMITS[key]))
+	return value
 
 
 func _rotation_is_free(yaw: float) -> bool:
@@ -290,6 +449,7 @@ func _build_scooter() -> void :
 	_wheel_radius = 0.34
 	var paint: = _material(Color("#ee806a"))
 	var paint_dark: = _material(Color("#bb5149"))
+	_register_paint_materials(paint, paint_dark)
 	var cream: = _material(Color("#fff1d6"))
 	var dark: = _material(Color("#273341"))
 	var metal: = _material(Color("#b6c6d0"), 0.45, 0.4)
@@ -359,6 +519,7 @@ func _build_car() -> void :
 	_wheel_radius = 0.36
 	var paint: = _material(Color("#56aabb"))
 	var paint_dark: = _material(Color("#2b7b91"))
+	_register_paint_materials(paint, paint_dark)
 	var cream: = _material(Color("#fbf1d7"))
 	var dark: = _material(Color("#283541"))
 	var rubber: = _material(Color("#1e2631"))
@@ -429,6 +590,121 @@ func _build_car() -> void :
 
 
 
+func _build_airplane() -> void:
+	_visual = Node3D.new()
+	_visual.name = "AirCourierVisual"
+	add_child(_visual)
+	_wheel_radius = 0.27
+	var paint: = _material(Color("#ecb248"))
+	var trim: = _material(Color("#c77735"))
+	_register_paint_materials(paint, trim)
+	var cream: = _material(Color("#fff2d5"))
+	var dark: = _material(Color("#263747"))
+	var rubber: = _material(Color("#202b36"))
+	var metal: = _material(Color("#c1ced2"), 0.45, 0.35)
+	var glass: = _material(Color(0.40, 0.71, 0.80, 0.62), 0.1, 0.22)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	_ellipsoid(_visual, "RoundedFuselage", Vector3(1.17, 1.19, 3.85), Vector3(0, 1.04, -0.34), paint)
+	_ellipsoid(_visual, "TaperedTailBoom", Vector3(0.57, 0.62, 2.45), Vector3(0, 1.08, 1.18), paint)
+	_ellipsoid(_visual, "EngineCowling", Vector3(1.04, 1.03, 0.83), Vector3(0, 1.08, -1.85), trim)
+	var engine_ring: = _cylinder(_visual, "EngineRing", 0.44, 0.12, Vector3(0, 1.08, -2.20), metal, 24)
+	engine_ring.rotation.x = PI / 2.0
+	for side in [-1.0, 1.0]:
+		for vent in range(4):
+			_box(_visual, "EngineCoolingVent", Vector3(0.025, 0.16, 0.055), Vector3(side * 0.505, 1.08, -1.97 + float(vent) * 0.15), dark, 0.012)
+		_tube(_visual, "FuselagePinstripe", Vector3(side * 0.56, 1.10, -1.3), Vector3(side * 0.29, 1.15, 1.43), 0.026, cream, 8)
+		_box(_visual, "AirMailBadge", Vector3(0.022, 0.24, 0.37), Vector3(side * 0.588, 1.18, 0.59), cream, 0.045)
+		_box(_visual, "AirMailBadgeStripe", Vector3(0.03, 0.045, 0.22), Vector3(side * 0.604, 1.18, 0.59), trim, 0.012)
+
+	_box(_visual, "RoundedMainWing", Vector3(5.8, 0.20, 1.35), Vector3(0, 0.99, -0.34), paint, 0.09)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "WingTipPaint", Vector3(0.30, 0.205, 1.28), Vector3(side * 2.72, 1.0, -0.34), trim, 0.09)
+		_box(_visual, "WingStripe", Vector3(0.18, 0.014, 1.14), Vector3(side * 2.39, 1.10, -0.34), cream, 0.006)
+		_box(_visual, "AileronSeam", Vector3(1.79, 0.014, 0.018), Vector3(side * 1.73, 1.10, 0.12), trim, 0.005)
+		for rib in range(3):
+			_box(_visual, "WingRib", Vector3(0.018, 0.014, 0.99), Vector3(side * (0.93 + float(rib) * 0.53), 1.10, -0.37), cream, 0.005)
+		_tube(_visual, "WingSupport", Vector3(side * 0.39, 0.61, -0.39), Vector3(side * 1.92, 0.90, -0.39), 0.036, metal)
+		var navigation_color: = Color("#ee7165") if side < 0.0 else Color("#76cea0")
+		_ellipsoid(_visual, "WingNavigationLamp", Vector3(0.12, 0.12, 0.18), Vector3(side * 2.87, 1.03, -0.61), _lamp(navigation_color))
+		# Compact arcade guns stay inside the existing wing collision footprint.
+		var gun: = _cylinder(_visual, "WingGunBarrelLeft" if side < 0.0 else "WingGunBarrelRight", 0.055, 0.77, Vector3(side * 1.18, 0.88, -1.02), dark, 12)
+		gun.rotation.x = PI / 2.0
+		var muzzle: = _cylinder(_visual, "WingGunMuzzle", 0.075, 0.11, Vector3(side * 1.18, 0.88, -1.44), metal, 12)
+		muzzle.rotation.x = PI / 2.0
+		_box(_visual, "WingGunFairing", Vector3(0.21, 0.18, 0.56), Vector3(side * 1.18, 0.89, -0.55), trim, 0.07)
+	_box(_visual, "Tailplane", Vector3(2.35, 0.13, 0.75), Vector3(0, 1.24, 1.95), paint, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "TailplaneTip", Vector3(0.22, 0.14, 0.69), Vector3(side * 1.05, 1.245, 1.95), trim, 0.055)
+		_box(_visual, "ElevatorSeam", Vector3(0.88, 0.013, 0.02), Vector3(side * 0.61, 1.314, 2.15), cream, 0.005)
+	var fin: = _box(_visual, "RoundedTailFin", Vector3(0.16, 1.14, 0.83), Vector3(0, 1.66, 1.94), paint, 0.075)
+	fin.rotation.x = -0.14
+	_box(_visual, "Rudder", Vector3(0.17, 0.75, 0.21), Vector3(0, 1.69, 2.23), trim, 0.07)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "FinInsignia", Vector3(0.014, 0.18, 0.30), Vector3(side * 0.091, 1.86, 1.98), cream, 0.035)
+	_ellipsoid(_visual, "TailLamp", Vector3(0.09, 0.09, 0.12), Vector3(0, 1.30, 2.40), _lamp(cream.albedo_color))
+
+	# A short windscreen and an open cockpit keep the actual courier visible.
+	_box(_visual, "CockpitWell", Vector3(0.84, 0.13, 1.14), Vector3(0, 1.51, 0.13), dark, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_visual, "CockpitRim", Vector3(0.075, 0.10, 1.21), Vector3(side * 0.45, 1.59, 0.13), cream, 0.035)
+	_box(_visual, "CockpitRearRim", Vector3(0.91, 0.11, 0.10), Vector3(0, 1.59, 0.69), cream, 0.04)
+	_box(_visual, "PilotSeat", Vector3(0.55, 0.16, 0.62), Vector3(0, 1.38, 0.39), dark, 0.065)
+	_box(_visual, "PilotSeatBack", Vector3(0.56, 0.46, 0.14), Vector3(0, 1.61, 0.65), trim, 0.06)
+	var windscreen: = _box(_visual, "CockpitWindscreen", Vector3(0.96, 0.40, 0.04), Vector3(0, 1.79, -0.50), glass, 0.018)
+	windscreen.rotation.x = -0.23
+	_tube(_visual, "WindscreenTopFrame", Vector3(-0.48, 1.98, -0.55), Vector3(0.48, 1.98, -0.55), 0.022, cream)
+	for side in [-1.0, 1.0]:
+		_tube(_visual, "WindscreenSideFrame", Vector3(side * 0.47, 1.59, -0.46), Vector3(side * 0.47, 1.98, -0.55), 0.022, cream)
+	_box(_visual, "InstrumentPanel", Vector3(0.71, 0.22, 0.10), Vector3(0, 1.58, -0.37), dark, 0.04)
+	for side in [-1.0, 0.0, 1.0]:
+		var dial: = _cylinder(_visual, "FlightInstrument", 0.065, 0.015, Vector3(side * 0.19, 1.61, -0.31), cream)
+		dial.rotation.x = PI / 2.0
+		_box(_visual, "InstrumentNeedle", Vector3(0.013, 0.058, 0.012), Vector3(side * 0.19, 1.62, -0.297), trim, 0.004)
+	_tube(_visual, "ControlColumn", Vector3(0, 1.33, -0.18), Vector3(0, 1.64, -0.48), 0.033, metal)
+	_tube(_visual, "PilotYoke", Vector3(-0.38, 1.64, -0.48), Vector3(0.38, 1.64, -0.48), 0.039, dark)
+
+	for side in [-1.0, 1.0]:
+		_tube(_visual, "MainLandingStrut", Vector3(side * 0.35, 0.72, -0.39), Vector3(side * 0.88, 0.27, -0.48), 0.045, metal)
+		_box(_visual, "LandingStrutFairing", Vector3(0.20, 0.37, 0.21), Vector3(side * 0.75, 0.48, -0.46), trim, 0.075)
+		_wheels.append(_motor_wheel(_visual, "MainLandingWheel", Vector3(side * 0.88, 0.27, -0.48), 0.27, 0.17, rubber, metal))
+	_tube(_visual, "NoseLandingStrut", Vector3(0, 0.64, -1.56), Vector3(0, 0.22, -1.67), 0.039, metal)
+	var nose_steering: = Node3D.new()
+	nose_steering.name = "NoseWheelSteering"
+	nose_steering.position = Vector3(0, 0.22, -1.67)
+	_visual.add_child(nose_steering)
+	_wheels.append(_motor_wheel(nose_steering, "NoseWheel", Vector3.ZERO, 0.22, 0.14, rubber, metal))
+	_front_pivots.append(nose_steering)
+	_ellipsoid(_visual, "LandingLight", Vector3(0.23, 0.19, 0.055), Vector3(0, 0.84, -2.20), _lamp(Color("#fff3d2")))
+
+	_propeller = Node3D.new()
+	_propeller.name = "SpinningPropeller"
+	_propeller.position = Vector3(0, 1.08, -2.36)
+	_visual.add_child(_propeller)
+	_box(_propeller, "PropellerBlade", Vector3(0.15, 1.76, 0.07), Vector3.ZERO, dark, 0.06)
+	for side in [-1.0, 1.0]:
+		_box(_propeller, "PropellerTip", Vector3(0.153, 0.22, 0.074), Vector3(0, side * 0.75, 0), cream, 0.055)
+	_ellipsoid(_propeller, "PropellerSpinner", Vector3(0.34, 0.34, 0.40), Vector3(0, 0, -0.085), paint)
+	_box(_visual, "RearCargoTray", Vector3(0.73, 0.07, 0.62), Vector3(0, 1.43, 1.10), metal, 0.025)
+	_make_parcel(Vector3(0, 1.65, 1.10), Vector3(0.61, 0.38, 0.48))
+	_build_rider()
+	_rider.position = Vector3(0, 0.25, 0.25)
+	for index in range(_upper_legs.size()):
+		var side: = -1.0 if index == 0 else 1.0
+		_place_tube(_upper_legs[index], Vector3(side * 0.14, 1.17, 0.27), Vector3(side * 0.22, 0.98, -0.10))
+		_place_tube(_lower_legs[index], Vector3(side * 0.22, 0.98, -0.10), Vector3(side * 0.23, 0.77, -0.35))
+		_feet[index].position = Vector3(side * 0.23, 0.75, -0.41)
+	_damage_smoke = Node3D.new()
+	_damage_smoke.name = "AircraftDamageSmoke"
+	_visual.add_child(_damage_smoke)
+	var smoke_material: = _material(Color("#4b505b"))
+	for index in range(3):
+		var puff: = _ellipsoid(_damage_smoke, "DamageSmokePuff", Vector3(0.34, 0.34, 0.34), Vector3.ZERO, smoke_material)
+		_damage_smoke_puffs.append(puff)
+	set_combat_health(combat_health)
+
+
 func _make_parcel(origin: Vector3, dimensions: Vector3) -> void :
 	_parcel = Node3D.new()
 	_parcel.name = "SecuredDeliveryParcel"
@@ -480,6 +756,9 @@ func _build_bicycle() -> void :
 	add_child(_visual)
 	var paint: = _material(Color("#efb64a"))
 	var trim: = _material(Color("#d58030"))
+	_register_paint_materials(paint, trim)
+	var saddle_trim: = _material(Color("#d58030"))
+	var pedal_reflector: = _material(Color("#efb64a"))
 	var dark: = _material(Color("#253746"))
 	var tire: = _material(Color("#202936"))
 	var metal: = _material(Color("#b9ced0"), 0.25, 0.65)
@@ -503,7 +782,7 @@ func _build_bicycle() -> void :
 	badge.rotation.x = -0.5
 	_box(_visual, "FrameBadgeStripe", Vector3(0.014, 0.018, 0.12), Vector3(0.069, 0.79, -0.24), trim, 0.005)
 	_box(_visual, "Saddle", Vector3(0.3, 0.11, 0.43), Vector3(0, 1.2, 0.3), dark, 0.045)
-	_box(_visual, "SaddleInset", Vector3(0.22, 0.018, 0.29), Vector3(0, 1.256, 0.33), trim, 0.007)
+	_box(_visual, "SaddleInset", Vector3(0.22, 0.018, 0.29), Vector3(0, 1.256, 0.33), saddle_trim, 0.007)
 	_box(_visual, "RearRack", Vector3(0.44, 0.055, 0.4), Vector3(0, 0.98, 0.9), dark, 0.015)
 	for side in [-1.0, 1.0]:
 		_tube(_visual, "RackSupport", rear_axle + Vector3(side * 0.17, 0, 0), Vector3(side * 0.18, 0.98, 0.9), 0.018, metal)
@@ -553,7 +832,7 @@ func _build_bicycle() -> void :
 	for side in [-1.0, 1.0]:
 		_tube(_crank, "CrankArm", Vector3(side * 0.18, 0, 0), Vector3(side * 0.18, 0, side * 0.18), 0.018, metal)
 		_box(_crank, "Pedal", Vector3(0.15, 0.04, 0.11), Vector3(side * 0.23, 0, side * 0.18), dark, 0.012)
-		_box(_crank, "PedalReflector", Vector3(0.08, 0.018, 0.015), Vector3(side * 0.23, 0, side * 0.18 - 0.06), paint, 0.006)
+		_box(_crank, "PedalReflector", Vector3(0.08, 0.018, 0.015), Vector3(side * 0.23, 0, side * 0.18 - 0.06), pedal_reflector, 0.006)
 	_wheels = [_front_wheel, _rear_wheel]
 	_front_pivots = [_front_assembly]
 	_build_rider()
@@ -580,6 +859,12 @@ func _build_rider() -> void :
 	var jacket_light: = _material(IDENTITY_COLORS[_identity_index][2])
 	_identity_materials = [jacket, jacket_dark, jacket_light]
 	var pants: = _material(Color("#213044"))
+	var cap: = _material(IDENTITY_COLORS[_identity_index][0])
+	var eyes: = _material(Color("#213044"))
+	_outfit_materials = {"jacket": jacket, "dark": jacket_dark, "light": jacket_light, "cap": cap, "pants": pants}
+	var bag_color: = _material(Color("#164293"))
+	var bag_trim: = _material(Color("#246cdb"))
+	_backpack_materials = [bag_color, bag_trim]
 	var skin: = _material(Color("#efb886"))
 	var hair: = _material(Color("#47332e"))
 	var cream: = _material(Color("#f0f1eb"))
@@ -587,12 +872,10 @@ func _build_rider() -> void :
 	var torso: = _box(_rider, "Jacket", Vector3(0.58, 0.54, 0.38), Vector3(0, 1.49, 0.1), jacket, 0.09)
 	torso.rotation.x = -0.22
 	_box(_rider, "TrouserHips", Vector3(0.46, 0.16, 0.32), Vector3(0, 1.17, 0.27), pants, 0.06)
-	_box(_rider, "DeliveryBackpack", Vector3(0.48, 0.5, 0.25), Vector3(0, 1.48, 0.4), jacket_dark, 0.055)
-	_box(_rider, "BackpackPocket", Vector3(0.38, 0.18, 0.05), Vector3(0, 1.36, 0.54), jacket, 0.025)
-	_box(_rider, "BackpackStripe", Vector3(0.38, 0.04, 0.018), Vector3(0, 1.51, 0.54), badge, 0.008)
-	_box(_rider, "BackpackPocketZip", Vector3(0.3, 0.012, 0.014), Vector3(0, 1.425, 0.573), cream, 0.004)
+	_build_backpack_variants(_rider, Vector3(0.0, 1.48, 0.4), Vector3(0.9, 0.88, 0.96), bag_color, bag_trim, badge, cream)
+
 	for side in [-1.0, 1.0]:
-		_box(_rider, "BackpackStrap", Vector3(0.05, 0.39, 0.022), Vector3(side * 0.22, 1.5, -0.1), jacket_dark, 0.01)
+		_backpack_straps.append(_box(_rider, "BackpackStrap", Vector3(0.05, 0.39, 0.022), Vector3(side * 0.22, 1.5, -0.1), bag_color, 0.01))
 		_tube(_rider, "UpperArm", Vector3(side * 0.3, 1.66, 0.02), Vector3(side * 0.34, 1.45, -0.31), 0.093, jacket)
 		_tube(_rider, "LowerArm", Vector3(side * 0.34, 1.45, -0.31), Vector3(side * 0.37, 1.39, -0.73), 0.08, jacket_light)
 		_ellipsoid(_rider, "Hand", Vector3(0.14, 0.13, 0.16), Vector3(side * 0.37, 1.39, -0.73), skin)
@@ -602,14 +885,85 @@ func _build_rider() -> void :
 	_ellipsoid(_rider, "Neck", Vector3(0.16, 0.19, 0.17), Vector3(0, 1.78, -0.01), skin)
 	_ellipsoid(_rider, "Head", Vector3(0.39, 0.42, 0.35), Vector3(0, 1.96, -0.025), skin)
 	_ellipsoid(_rider, "Hair", Vector3(0.38, 0.18, 0.35), Vector3(0, 2.075, -0.005), hair)
-	_ellipsoid(_rider, "Cap", Vector3(0.43, 0.2, 0.4), Vector3(0, 2.145, -0.01), jacket)
-	_ellipsoid(_rider, "CapPeak", Vector3(0.35, 0.035, 0.23), Vector3(0, 2.13, -0.23), jacket)
+	_ellipsoid(_rider, "Cap", Vector3(0.43, 0.2, 0.4), Vector3(0, 2.145, -0.01), cap)
+	_ellipsoid(_rider, "CapPeak", Vector3(0.35, 0.035, 0.23), Vector3(0, 2.13, -0.23), cap)
 	for side in [-1.0, 1.0]:
 		_ellipsoid(_rider, "Ear", Vector3(0.07, 0.12, 0.065), Vector3(side * 0.19, 1.96, -0.01), skin)
-		_ellipsoid(_rider, "Eye", Vector3(0.033, 0.045, 0.02), Vector3(side * 0.076, 1.985, -0.196), pants)
+		_ellipsoid(_rider, "Eye", Vector3(0.033, 0.045, 0.02), Vector3(side * 0.076, 1.985, -0.196), eyes)
 	_ellipsoid(_rider, "Nose", Vector3(0.05, 0.046, 0.05), Vector3(0, 1.95, -0.208), skin)
 	_box(_rider, "Smile", Vector3(0.054, 0.012, 0.012), Vector3(0, 1.9, -0.195), hair, 0.004)
 	_animate(0.0)
+
+
+
+# Four small static variant groups are built once, then only visibility/materials
+# change. The group is a visual child; it owns no collider or movement script.
+func _build_backpack_variants(parent: Node3D, center: Vector3, fit: Vector3, color: StandardMaterial3D, trim: StandardMaterial3D, badge: StandardMaterial3D, cream: StandardMaterial3D) -> void:
+	var variants: = Node3D.new()
+	variants.name = "BackpackVariants"
+	parent.add_child(variants)
+	var classic: = _backpack_group(variants, "BackpackClassic", center, fit)
+	_box(classic, "DeliveryBackpack", Vector3(0.53, 0.57, 0.26), Vector3(0.0, 1.26, 0.31) - Vector3(0.0, 1.26, 0.31), color, 0.065)
+	_box(classic, "BackpackFlap", Vector3(0.465, 0.155, 0.035), Vector3(0.0, 1.415, 0.443) - Vector3(0.0, 1.26, 0.31), trim, 0.025)
+	_box(classic, "BackpackStripe", Vector3(0.425, 0.055, 0.012), Vector3(0.0, 1.294, 0.447) - Vector3(0.0, 1.26, 0.31), badge, 0.011)
+	_box(classic, "BackpackPocket", Vector3(0.425, 0.19, 0.063), Vector3(0.0, 1.148, 0.448) - Vector3(0.0, 1.26, 0.31), trim, 0.037)
+	_box(classic, "BackpackPocketZip", Vector3(0.34, 0.015, 0.012), Vector3(0.0, 1.214, 0.484) - Vector3(0.0, 1.26, 0.31), cream)
+	_box(classic, "BackpackZipPull", Vector3(0.015, 0.04, 0.013), Vector3(0.13, 1.199, 0.495) - Vector3(0.0, 1.26, 0.31), badge)
+	_box(classic, "BackpackParcelBadge", Vector3(0.08, 0.063, 0.012), Vector3(0.0, 1.145, 0.486) - Vector3(0.0, 1.26, 0.31), badge, 0.013)
+	_box(classic, "BackpackParcelTape", Vector3(0.012, 0.05, 0.009), Vector3(0.0, 1.145, 0.496) - Vector3(0.0, 1.26, 0.31), cream)
+	for side in [-1.0, 1.0]:
+		_box(classic, "BackpackSeam", Vector3(0.012, 0.31, 0.011), Vector3(side * 0.221, 1.297, 0.433) - Vector3(0.0, 1.26, 0.31), trim)
+		_box(classic, "BackpackSidePocket", Vector3(0.07, 0.19, 0.15), Vector3(side * 0.262, 1.135, 0.3) - Vector3(0.0, 1.26, 0.31), trim, 0.028)
+	_box(classic, "BackpackHandle", Vector3(0.12, 0.034, 0.052), Vector3(0.0, 1.568, 0.3) - Vector3(0.0, 1.26, 0.31), color, 0.015)
+
+	var compact: Node3D = classic.duplicate(0) as Node3D
+	compact.name = "BackpackCompact"
+	compact.scale = fit * Vector3(0.79, 0.74, 0.82)
+	compact.position = center + Vector3(0.0, -0.025, -0.015)
+	variants.add_child(compact)
+
+	var rolltop: = _backpack_group(variants, "BackpackRolltop", center, fit)
+	_box(rolltop, "DeliveryBackpack", Vector3(0.43, 0.65, 0.25), Vector3(0.0, 0.03, 0.0), color, 0.065)
+	_box(rolltop, "RolltopFold", Vector3(0.435, 0.12, 0.25), Vector3(0.0, 0.338, 0.0), trim, 0.034)
+	_ellipsoid(rolltop, "RolltopRoll", Vector3(0.48, 0.105, 0.13), Vector3(0.0, 0.412, 0.0), color)
+	_box(rolltop, "RolltopClosure", Vector3(0.035, 0.29, 0.023), Vector3(0.0, 0.245, 0.139), color, 0.008)
+	_box(rolltop, "RolltopBuckle", Vector3(0.066, 0.052, 0.032), Vector3(0.0, 0.133, 0.151), badge, 0.012)
+	_box(rolltop, "RolltopPocket", Vector3(0.35, 0.21, 0.058), Vector3(0.0, -0.151, 0.139), trim, 0.027)
+	_box(rolltop, "RolltopPocketZip", Vector3(0.28, 0.013, 0.016), Vector3(0.0, -0.064, 0.174), cream, 0.004)
+	for side in [-1.0, 1.0]:
+		_box(rolltop, "RolltopSidePocket", Vector3(0.064, 0.23, 0.13), Vector3(side * 0.219, -0.132, 0.0), trim, 0.018)
+	_box(rolltop, "RolltopStripe", Vector3(0.26, 0.029, 0.016), Vector3(0.0, -0.171, 0.177), badge, 0.005)
+
+	var messenger: = _backpack_group(variants, "BackpackMessenger", center, fit)
+	var messenger_body: = Node3D.new()
+	messenger_body.name = "MessengerBody"
+	messenger_body.position = Vector3(0.19, -0.115, 0.02)
+	messenger_body.rotation.z = 0.1
+	messenger.add_child(messenger_body)
+	_box(messenger_body, "DeliveryBackpack", Vector3(0.57, 0.35, 0.2), Vector3.ZERO, color, 0.055)
+	_box(messenger_body, "MessengerFlap", Vector3(0.525, 0.22, 0.035), Vector3(0.0, 0.055, 0.107), trim, 0.034)
+	_box(messenger_body, "MessengerStripe", Vector3(0.39, 0.029, 0.016), Vector3(0.0, 0.018, 0.132), badge, 0.008)
+	for side in [-1.0, 1.0]:
+		_box(messenger_body, "MessengerClosure", Vector3(0.033, 0.16, 0.02), Vector3(side * 0.163, -0.074, 0.127), color, 0.005)
+		_box(messenger_body, "MessengerBuckle", Vector3(0.061, 0.045, 0.027), Vector3(side * 0.163, -0.05, 0.141), badge, 0.009)
+	var front_strap: = _box(messenger, "CrossbodyFrontStrap", Vector3(0.064, 0.75, 0.025), Vector3(0.0, 0.045, -0.537), color, 0.012)
+	front_strap.rotation.z = -0.52
+	var rear_strap: = _box(messenger, "CrossbodyRearStrap", Vector3(0.063, 0.7, 0.025), Vector3(0.0, 0.052, -0.077), color, 0.012)
+	rear_strap.rotation.z = 0.52
+
+	_backpack_variants = {"classic": classic, "compact": compact, "rolltop": rolltop, "messenger": messenger}
+	for style: String in _backpack_variants:
+		var group: Node3D = _backpack_variants[style]
+		group.visible = style == "classic"
+
+
+func _backpack_group(parent: Node3D, group_name: String, center: Vector3, fit: Vector3) -> Node3D:
+	var group: = Node3D.new()
+	group.name = group_name
+	group.position = center
+	group.scale = fit
+	parent.add_child(group)
+	return group
 
 
 func _animate(delta: float) -> void :
@@ -624,6 +978,9 @@ func _animate(delta: float) -> void :
 	for lamp: StandardMaterial3D in _brake_lights:
 		lamp.emission_energy_multiplier = 0.5 if braking else 0.12
 	_last_visual_speed = speed
+	if is_airplane():
+		_animate_airplane(delta)
+		return
 	if str(definition.get("id", "bicycle")) != "bicycle" or not is_instance_valid(_crank):
 		return
 	if occupied and absf(speed) > 0.1:
@@ -638,6 +995,27 @@ func _animate(delta: float) -> void :
 		_place_tube(_upper_legs[index], hip, knee)
 		_place_tube(_lower_legs[index], knee, ankle)
 		_feet[index].position = ankle + Vector3(0, -0.015, -0.045)
+
+
+func _animate_airplane(delta: float) -> void:
+	if not is_instance_valid(_visual):
+		return
+	var airborne: = occupied and (not _remote_grounded if _remote else not is_on_floor())
+	var pitch: = clampf(velocity.y / _value("ascend_rate", 8.0), -1.0, 1.0) * 0.12 if airborne else 0.0
+	var bank: = -_steering * 0.23 if airborne else 0.0
+	_visual.rotation.x = lerp_angle(_visual.rotation.x, pitch, 1.0 - exp(-5.0 * delta))
+	_visual.rotation.z = lerp_angle(_visual.rotation.z, bank, 1.0 - exp(-5.0 * delta))
+	if is_instance_valid(_propeller):
+		var target_spin: = 32.0 + absf(speed) * 1.3 if occupied else 0.0
+		_propeller_speed = move_toward(_propeller_speed, target_spin, 70.0 * delta)
+		_propeller.rotation.z = fmod(_propeller.rotation.z + _propeller_speed * delta, TAU)
+	if is_instance_valid(_damage_smoke) and _damage_smoke.visible:
+		_damage_smoke_phase = fmod(_damage_smoke_phase + delta * 0.8, 1.0)
+		for index in range(_damage_smoke_puffs.size()):
+			var phase: = fmod(_damage_smoke_phase + float(index) / 3.0, 1.0)
+			var puff: MeshInstance3D = _damage_smoke_puffs[index]
+			puff.position = Vector3(sin(phase * TAU + float(index)) * 0.22, 1.45 + phase * 1.2, -1.6 + phase * 1.7)
+			puff.scale = Vector3.ONE * (0.35 + sin(phase * PI) * 1.5)
 
 
 func _wheel(parent: Node3D, mesh_name: String, center: Vector3, tire: StandardMaterial3D, rim: StandardMaterial3D) -> Node3D:

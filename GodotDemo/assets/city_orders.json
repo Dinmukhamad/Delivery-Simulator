@@ -1,0 +1,21 @@
+{
+  "minimum_local_orders": 2,
+  "regional_chance": 0.65,
+  "minimum_delivery_distance": 8,
+  "route_cap_meters": {
+    "walk": 130,
+    "bicycle": 220,
+    "scooter": 380,
+    "car": 700
+  },
+  "pickup_access_meters": {
+    "walk": 95,
+    "bicycle": 180,
+    "scooter": 300,
+    "car": 520
+  },
+  "express_reference_speed": 4.5,
+  "express_time_factor": 1.7,
+  "express_handling_seconds": 18,
+  "express_minimum_seconds": 45
+}
